@@ -148,7 +148,6 @@ export function scanDesktopSessions(env: NodeJS.ProcessEnv = process.env): Deskt
       string,
       { started_at: number; error_json: string }
     >();
-    const anyCompletedAfter = new Map<string, { completed_at: number }>();
     const completedAt = new Map<string, number>();
 
     for (const row of rows) {

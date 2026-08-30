@@ -8,8 +8,7 @@ import { runJobOnce } from "./supervisor.js";
 import { validateThreadResume } from "./app-server/supervisor.js";
 import {
   pickSessions,
-  scanDesktopSessions,
-  type DesktopSession
+  scanDesktopSessions
 } from "./desktop-sessions.js";
 
 const program = new Command();

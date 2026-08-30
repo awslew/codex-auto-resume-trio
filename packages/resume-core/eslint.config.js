@@ -5,7 +5,7 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    ignores: ["dist/**", "node_modules/**", "coverage/**", "vitest.config.ts", "tests/fixtures/*.js"]
+    ignores: ["dist/**", "node_modules/**", "coverage/**", "vitest.config.ts", "**/tests/fixtures/*.js"]
   },
   {
     files: ["**/*.ts"],
