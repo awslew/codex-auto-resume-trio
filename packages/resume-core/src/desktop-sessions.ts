@@ -35,6 +35,9 @@ export type DesktopSession = {
   lastError?: string;
 };
 
+/** 会话运行状态（看板用）：running=正在跑 / waiting=已停等额度 / idle=空闲 / done=已完成 */
+export type SessionActivity = "running" | "waiting" | "idle" | "done" | "unknown";
+
 function codexHome(env: NodeJS.ProcessEnv = process.env): string {
   return env.CODEX_HOME ?? path.join(homedir(), ".codex");
 }
@@ -230,8 +233,121 @@ export function scanDesktopSessions(env: NodeJS.ProcessEnv = process.env): Deskt
   }
 }
 
-/** Pick which sessions to resume, interactively or via --select ids. */
-export function pickSessions(
+/**
+ * List ALL Codex desktop sessions (not just quota-stopped ones), annotated
+ * with their current activity state.  Used by the taskboard "session list"
+ * view so the user can pick which sessions to auto-resume.
+ */
+export function listCodexSessions(env: NodeJS.ProcessEnv = process.env): Array<
+  DesktopSession & { activity: SessionActivity }
+> {
+  const { threads: threadsDb, turns: turnsDb } = dbPath(env);
+  let threadsCon;
+  let turnsCon;
+  try {
+    threadsCon = openRo(threadsDb);
+    turnsCon = openRo(turnsDb);
+    const threadRows = threadsCon
+      .prepare(
+        `SELECT id, title, cwd, updated_at, tokens_used
+           FROM threads
+          ORDER BY updated_at DESC`
+      )
+      .all() as Array<{
+      id: string;
+      title: string | null;
+      cwd: string | null;
+      updated_at: number | null;
+      tokens_used: number | null;
+    }>;
+
+    // For each thread, find the latest turn and its status/error.
+    const turnRows = turnsCon
+      .prepare(
+        `SELECT thread_id, status, error_json, started_at
+           FROM thread_turns`
+      )
+      .all() as Array<{
+      thread_id: string;
+      status: string;
+      error_json: string | null;
+      started_at: number | null;
+    }>;
+
+    const latestTurn = new Map<string, { status: string; error_json: string | null; started_at: number }>();
+    const completedAt = new Map<string, number>();
+    for (const row of turnRows) {
+      const tid = row.thread_id;
+      const at = row.started_at ?? 0;
+      if (row.status === "completed") {
+        completedAt.set(tid, Math.max(completedAt.get(tid) ?? 0, at));
+      }
+      const prev = latestTurn.get(tid);
+      if (!prev || at > prev.started_at) {
+        latestTurn.set(tid, { status: row.status, error_json: row.error_json, started_at: at });
+      }
+    }
+
+    const results: Array<DesktopSession & { activity: SessionActivity }> = [];
+    for (const t of threadRows) {
+      const turn = latestTurn.get(t.id);
+      const updatedMs = t.updated_at ? Number(t.updated_at) : 0;
+      const base: DesktopSession = {
+        threadId: t.id,
+        title: (t.title ?? "").trim().slice(0, 120) || "(untitled)",
+        cwd: (t.cwd ?? "").replace(/^\\\\\?\\/, ""),
+        updatedAt: updatedMs ? new Date(updatedMs * 1000).toISOString() : "",
+        tokensUsed: t.tokens_used ?? 0,
+      };
+
+      let activity: SessionActivity = "unknown";
+      if (!turn) {
+        activity = "idle";
+      } else if (turn.status === "failed" && turn.error_json) {
+        let message = "";
+        try {
+          const parsed = JSON.parse(turn.error_json) as { message?: string };
+          message = parsed.message ?? "";
+        } catch {
+          message = turn.error_json;
+        }
+        if (isUsageLimitError(message)) {
+          activity = "waiting";
+          base.resetAt = parseTryAgainAt(message);
+          base.limitKind = classifyLimitKind(message);
+          base.lastError = message.slice(0, 300);
+          // If a completed turn exists after the failure, the session actually finished.
+          if ((completedAt.get(t.id) ?? 0) > turn.started_at) {
+            activity = "done";
+          }
+        } else {
+          activity = "idle";
+          base.lastError = message.slice(0, 300);
+        }
+      } else if (turn.status === "completed") {
+        activity = "done";
+      } else if (turn.status === "in_progress" || turn.status === "running" || turn.status === "queued") {
+        activity = "running";
+      } else {
+        activity = "idle";
+      }
+
+      results.push({ ...base, activity });
+    }
+
+    results.sort((a, b) => (b.updatedAt < a.updatedAt ? -1 : b.updatedAt > a.updatedAt ? 1 : 0));
+    return results;
+  } catch (error) {
+    // DB may not exist yet (fresh Codex install) — return empty.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  } finally {
+    threadsCon?.close();
+    turnsCon?.close();
+  }
+}
+
+/** Pick which sessions to resume, interactively or via --select ids. */export function pickSessions(
   sessions: DesktopSession[],
   options: { select?: string[]; all?: boolean; yes?: boolean } = {}
 ): Promise<DesktopSession[]> | DesktopSession[] {
