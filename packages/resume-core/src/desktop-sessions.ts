@@ -234,6 +234,26 @@ export function scanDesktopSessions(env: NodeJS.ProcessEnv = process.env): Deskt
 }
 
 /**
+ * 内部代理会话标题特征（Codex 子代理/工具注入的会话，不是用户任务）。
+ * 这些会话不应出现在"任务列表"里让用户勾选续跑。
+ */
+const INTERNAL_SESSION_TITLE_PATTERNS = [
+  /^the following is the codex agent history/i,
+  /^codex agent history/i,
+  /^agent history/i,
+  /^系统提示/i,
+  /^system prompt/i,
+  /^internal/i,
+];
+
+/** 判断是否为内部代理会话（非用户任务） */
+export function isInternalSession(title: string): boolean {
+  const trimmed = (title ?? "").trim();
+  if (!trimmed) return true; // 无标题视为内部
+  return INTERNAL_SESSION_TITLE_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+/**
  * List ALL Codex desktop sessions (not just quota-stopped ones), annotated
  * with their current activity state.  Used by the taskboard "session list"
  * view so the user can pick which sessions to auto-resume.
@@ -335,8 +355,11 @@ export function listCodexSessions(env: NodeJS.ProcessEnv = process.env): Array<
       results.push({ ...base, activity });
     }
 
-    results.sort((a, b) => (b.updatedAt < a.updatedAt ? -1 : b.updatedAt > a.updatedAt ? 1 : 0));
-    return results;
+    // 过滤内部代理会话（agent history 等），只留用户任务会话
+    const userSessions = results.filter((session) => !isInternalSession(session.title));
+
+    userSessions.sort((a, b) => (b.updatedAt < a.updatedAt ? -1 : b.updatedAt > a.updatedAt ? 1 : 0));
+    return userSessions;
   } catch (error) {
     // DB may not exist yet (fresh Codex install) — return empty.
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
@@ -347,7 +370,8 @@ export function listCodexSessions(env: NodeJS.ProcessEnv = process.env): Array<
   }
 }
 
-/** Pick which sessions to resume, interactively or via --select ids. */export function pickSessions(
+/** Pick which sessions to resume, interactively or via --select ids. */
+export function pickSessions(
   sessions: DesktopSession[],
   options: { select?: string[]; all?: boolean; yes?: boolean } = {}
 ): Promise<DesktopSession[]> | DesktopSession[] {
