@@ -1,0 +1,4 @@
+#!/bin/sh
+# PGM CLI — 项目路径 = 脚本所在目录
+here="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+exec "C:/Users/user/AppData/Local/Programs/Python/Python311/python.exe" "$here/pgm.py" "$@"

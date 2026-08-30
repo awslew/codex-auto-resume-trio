@@ -1,0 +1,22 @@
+﻿{
+  "name": "codex-ops",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Codex 任务运营中心 monorepo：Taskboard（任务管理）+ Resume Core（额度自动续跑）+ PGM Collector（项目总谱感知）",
+  "workspaces": [
+    "apps/taskboard",
+    "packages/resume-core"
+  ],
+  "scripts": {
+    "build:resume": "npm --workspace packages/resume-core run build",
+    "typecheck:resume": "npm --workspace packages/resume-core run typecheck",
+    "test:resume": "npm --workspace packages/resume-core test",
+    "build:taskboard": "npm --workspace apps/taskboard run build",
+    "start:taskboard": "npm --workspace apps/taskboard run start",
+    "dev:taskboard": "npm --workspace apps/taskboard run dev",
+    "check": "npm run typecheck:resume && npm run build:resume && npm run test:resume && npm run build:taskboard"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}

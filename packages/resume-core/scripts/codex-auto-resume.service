@@ -1,0 +1,11 @@
+[Unit]
+Description=Codex Auto Resume daemon
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env car daemon foreground
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
