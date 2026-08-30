@@ -15,6 +15,16 @@ export {
   isSessionStalled,
   idleMinutes,
 } from "./transcript.js";
+export {
+  loadScore,
+  statusOf,
+  buildBeats,
+  shortName,
+  type PgmSession,
+  type PgmWorkspace,
+  type PgmState,
+  type PgmBeat,
+} from "./pgm-score.js";
 export { validateThreadResume, resumeWithAppServer } from "./app-server/supervisor.js";
 export { runCodexCli, buildCodexArgs } from "./codex-cli.js";
 export { defaultStateDir } from "./paths.js";
