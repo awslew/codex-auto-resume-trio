@@ -5,7 +5,7 @@
 export { createJob, loadJob, loadJobs, saveJob, summarizeJob } from "./store.js";
 export { runJobOnce } from "./supervisor.js";
 export { runDaemon } from "./daemon.js";
-export { scanDesktopSessions, pickSessions, listCodexSessions, isInternalSession } from "./desktop-sessions.js";
+export { scanDesktopSessions, pickSessions, listCodexSessions, isInternalSession, isInternalSource, isNoiseSession } from "./desktop-sessions.js";
 export {
   loadSessionIndex,
   findRollouts,

@@ -47,10 +47,15 @@ export type DesktopSession = {
   stalled?: boolean;
   /** 静默分钟数 */
   idleMinutes?: number | null;
+  /** Codex threads.source 原始值（vscode=用户桌面会话 / subagent=子代理 / exec=工具） */
+  source?: string | null;
 };
 
-/** 会话运行状态（看板用）：running=进行中 / waiting=额度已耗尽 / paused=已中止 / idle=空闲 / done=已完成 */
-export type SessionActivity = "running" | "waiting" | "paused" | "idle" | "done" | "unknown";
+/** 会话运行状态（看板用，四类标签）：
+ * running=进行中 / waiting=额度已耗尽 / paused=已中止 / done=已完成
+ * idle 已并入 done（用户要求四类标签，空闲与已完成不重复显示）。
+ */
+export type SessionActivity = "running" | "waiting" | "paused" | "done" | "unknown";
 
 function codexHome(env: NodeJS.ProcessEnv = process.env): string {
   return env.CODEX_HOME ?? path.join(homedir(), ".codex");
@@ -250,6 +255,8 @@ export function scanDesktopSessions(env: NodeJS.ProcessEnv = process.env): Deskt
 /**
  * 内部代理会话标题特征（Codex 子代理/工具注入的会话，不是用户任务）。
  * 这些会话不应出现在"任务列表"里让用户勾选续跑。
+ * 含 Codex 桌面新建会话的模板标题（# Files mentioned by the user 等），
+ * 那是系统生成的会话骨架，不是用户主动发起的具体任务。
  */
 const INTERNAL_SESSION_TITLE_PATTERNS = [
   /^the following is the codex agent history/i,
@@ -258,6 +265,7 @@ const INTERNAL_SESSION_TITLE_PATTERNS = [
   /^系统提示/i,
   /^system prompt/i,
   /^internal/i,
+  /^#\s*files mentioned by the user/i,
 ];
 
 /** 判断是否为内部代理会话（非用户任务） */
@@ -267,6 +275,29 @@ export function isInternalSession(title: string): boolean {
   return INTERNAL_SESSION_TITLE_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
+/** 内部/子代理会话 source 特征（threads.source 字段）。
+ * Codex 子代理（guardian 审批代理、thread_spawn worker）与 exec 工具会话
+ * 都不是用户发起的任务，一律过滤。
+ * 真实值示例：
+ *  - "vscode"（用户桌面会话，保留）
+ *  - "{\"subagent\":{\"other\":\"guardian\"}}"（审批/守护子代理，过滤）
+ *  - "{\"subagent\":{\"thread_spawn\":{...}}}"（子代理 worker，过滤）
+ *  - "exec"（工具执行的会话，过滤）
+ */
+const INTERNAL_SOURCE_PATTERNS = [
+  /subagent/i,
+  /guardian/i,
+  /thread_spawn/i,
+  /^exec$/i,
+];
+
+/** 判断 source 是否为内部/子代理会话（非用户任务） */
+export function isInternalSource(source: string | null | undefined): boolean {
+  const raw = (source ?? "").trim();
+  if (!raw) return false;
+  return INTERNAL_SOURCE_PATTERNS.some((pattern) => pattern.test(raw));
+}
+
 /** 内部/工具目录特征（cwd）：codex-auto-resume、deepseek-project、deepseek-harness、dsh 等自用工具目录。
  * 这些目录里的会话是开发/测试本工具产生的，不属于用户任务，不出现在任务列表。
  */
@@ -274,7 +305,6 @@ const INTERNAL_CWD_PATTERNS = [
   /codex-auto-resume/i,
   /deepseek-project/i,
   /deepseek-harness/i,
-  /deepseek/i,
   /[\\/]dsh[\\/]/i,
   /\\dsh$/i,
   /\.dsh$/i,
@@ -293,8 +323,7 @@ export function isInternalCwd(cwd: string): boolean {
  * 这些不应出现在任务列表里。
  */
 const NOISE_SESSION_TITLE_PATTERNS = [
-  /^resume$/i,
-  /^resume\s*$/i,
+  /^resume\b/i,
   /^\(?untitled\)?$/i,
 ];
 
@@ -321,7 +350,7 @@ export function listCodexSessions(env: NodeJS.ProcessEnv = process.env): Array<
     turnsCon = openRo(turnsDb);
     const threadRows = threadsCon
       .prepare(
-        `SELECT id, title, cwd, updated_at, tokens_used
+        `SELECT id, title, cwd, updated_at, tokens_used, source
            FROM threads
           ORDER BY updated_at DESC`
       )
@@ -331,6 +360,7 @@ export function listCodexSessions(env: NodeJS.ProcessEnv = process.env): Array<
       cwd: string | null;
       updated_at: number | null;
       tokens_used: number | null;
+      source: string | null;
     }>;
 
     // For each thread, find the latest turn and its status/error.
@@ -370,15 +400,19 @@ export function listCodexSessions(env: NodeJS.ProcessEnv = process.env): Array<
         cwd: (t.cwd ?? "").replace(/^\\\\\?\\/, ""),
         updatedAt: updatedMs ? new Date(updatedMs * 1000).toISOString() : "",
         tokensUsed: t.tokens_used ?? 0,
+        source: t.source ?? null,
       };
 
       let activity: SessionActivity = "unknown";
       const nowSec = Math.floor(Date.now() / 1000);
-      // threads.updated_at 非常新（最近 3 分钟内）说明 Codex 进程还在活跃写入该会话，
-      // 即使 thread_turns 还没落 inProgress 行也算"进行中"（turns 落库有延迟）。
+      // threads.updated_at 很新只能作为"会话有活动"的弱信号；真正判定"进行中"
+      // 以 thread_turns 里存在 inProgress 行为准（思考/执行/输出结论阶段都会落
+      // inProgress turn）。completed/interrupted 的会话即使 updated_at 还在被桌面
+      // touch（Codex 进程心跳），也已完成/已中止，不再翻成"进行中"。
       const freshUpdated = updatedMs > 0 && nowSec - updatedMs <= 180;
       if (!turn) {
-        activity = freshUpdated ? "running" : "idle";
+        // 无任何 turn 但 updated_at 很新：刚创建还在初始化（未落 turn）
+        activity = freshUpdated ? "running" : "done";
       } else if (turn.status === "failed" && turn.error_json) {
         let message = "";
         try {
@@ -397,12 +431,12 @@ export function listCodexSessions(env: NodeJS.ProcessEnv = process.env): Array<
             activity = "done";
           }
         } else {
-          activity = "idle";
+          activity = "done";
           base.lastError = message.slice(0, 300);
         }
       } else if (turn.status === "completed") {
-        // 已完成但 updated_at 还在刷新：可能正在开启新一轮（桌面端续聊/续跑）
-        activity = freshUpdated ? "running" : "done";
+        // 最后一次 turn 已 completed：会话已完成，不因 updated_at 心跳翻"进行中"
+        activity = "done";
       } else if (
         turn.status === "inProgress"
         || turn.status === "in_progress"
@@ -412,22 +446,24 @@ export function listCodexSessions(env: NodeJS.ProcessEnv = process.env): Array<
         activity = "running";
       } else if (turn.status === "interrupted") {
         // 被手动暂停/中止（思考或执行过程中，没有结论输出）
-        // 若 updated_at 又在刷新，说明用户重新播放（继续）了
-        activity = freshUpdated ? "running" : "paused";
+        // 用户重新播放后 Codex 会新建 inProgress turn，届时自然翻"进行中"
+        activity = "paused";
       } else {
-        activity = "idle";
+        activity = "done";
       }
 
       results.push({ ...base, activity });
     }
 
-    // 过滤内部代理会话（agent history 等）、内部/工具目录（codex-auto-resume 等）
-    // 与无意义/自动续跑产物（空标题、纯 resume），只留用户任务会话
+    // 过滤内部代理会话（agent history 等）、子代理会话（guardian/thread_spawn/exec source）、
+    // 内部/工具目录（codex-auto-resume 等）与无意义/自动续跑产物（空标题、纯 resume），
+    // 只留用户发起的任务会话
     const userSessions = results.filter(
       (session) =>
         !isInternalSession(session.title)
         && !isInternalCwd(session.cwd)
         && !isNoiseSession(session.title)
+        && !isInternalSource(session.source)
     );
 
     userSessions.sort((a, b) => (b.updatedAt < a.updatedAt ? -1 : b.updatedAt > a.updatedAt ? 1 : 0));
