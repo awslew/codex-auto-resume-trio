@@ -49,8 +49,8 @@ export type DesktopSession = {
   idleMinutes?: number | null;
 };
 
-/** 会话运行状态（看板用）：running=正在跑 / waiting=已停等额度 / idle=空闲 / done=已完成 */
-export type SessionActivity = "running" | "waiting" | "idle" | "done" | "unknown";
+/** 会话运行状态（看板用）：running=进行中 / waiting=额度已耗尽 / paused=已中止 / idle=空闲 / done=已完成 */
+export type SessionActivity = "running" | "waiting" | "paused" | "idle" | "done" | "unknown";
 
 function codexHome(env: NodeJS.ProcessEnv = process.env): string {
   return env.CODEX_HOME ?? path.join(homedir(), ".codex");
@@ -267,6 +267,24 @@ export function isInternalSession(title: string): boolean {
   return INTERNAL_SESSION_TITLE_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
+/** 内部/工具目录特征（cwd）：codex-auto-resume、deepseek-project、deepseek-harness、dsh 等自用工具目录。
+ * 这些目录里的会话是开发/测试本工具产生的，不属于用户任务，不出现在任务列表。
+ */
+const INTERNAL_CWD_PATTERNS = [
+  /codex-auto-resume/i,
+  /deepseek-project/i,
+  /deepseek-harness/i,
+  /[\\/]dsh[\\/]/i,
+  /\\dsh$/i,
+  /\.dsh$/i,
+  /taskboard/i,
+];
+
+/** 判断 cwd 是否为内部/工具目录（非用户项目） */
+export function isInternalCwd(cwd: string): boolean {
+  return INTERNAL_CWD_PATTERNS.some((pattern) => pattern.test(cwd ?? ""));
+}
+
 /**
  * List ALL Codex desktop sessions (not just quota-stopped ones), annotated
  * with their current activity state.  Used by the taskboard "session list"
@@ -360,8 +378,16 @@ export function listCodexSessions(env: NodeJS.ProcessEnv = process.env): Array<
         }
       } else if (turn.status === "completed") {
         activity = "done";
-      } else if (turn.status === "in_progress" || turn.status === "running" || turn.status === "queued") {
+      } else if (
+        turn.status === "inProgress"
+        || turn.status === "in_progress"
+        || turn.status === "running"
+        || turn.status === "queued"
+      ) {
         activity = "running";
+      } else if (turn.status === "interrupted") {
+        // 被手动暂停/中止（思考或执行过程中，没有结论输出）
+        activity = "paused";
       } else {
         activity = "idle";
       }
@@ -369,8 +395,10 @@ export function listCodexSessions(env: NodeJS.ProcessEnv = process.env): Array<
       results.push({ ...base, activity });
     }
 
-    // 过滤内部代理会话（agent history 等），只留用户任务会话
-    const userSessions = results.filter((session) => !isInternalSession(session.title));
+    // 过滤内部代理会话（agent history 等）与内部/工具目录（codex-auto-resume 等），只留用户任务会话
+    const userSessions = results.filter(
+      (session) => !isInternalSession(session.title) && !isInternalCwd(session.cwd)
+    );
 
     userSessions.sort((a, b) => (b.updatedAt < a.updatedAt ? -1 : b.updatedAt > a.updatedAt ? 1 : 0));
 
