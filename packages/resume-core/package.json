@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Unofficial local supervisor that resumes Codex CLI work after rate limits reset.",
   "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
   "bin": {
     "car": "./bin/car.js"
   },
