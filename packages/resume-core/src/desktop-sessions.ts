@@ -274,6 +274,7 @@ const INTERNAL_CWD_PATTERNS = [
   /codex-auto-resume/i,
   /deepseek-project/i,
   /deepseek-harness/i,
+  /deepseek/i,
   /[\\/]dsh[\\/]/i,
   /\\dsh$/i,
   /\.dsh$/i,
@@ -283,6 +284,25 @@ const INTERNAL_CWD_PATTERNS = [
 /** 判断 cwd 是否为内部/工具目录（非用户项目） */
 export function isInternalCwd(cwd: string): boolean {
   return INTERNAL_CWD_PATTERNS.some((pattern) => pattern.test(cwd ?? ""));
+}
+
+/**
+ * 无意义/自动续跑产物会话标题（不是用户发起的真实任务）：
+ *  - 空标题（Codex 桌面有时会留下无标题会话，显示为 "(untitled)"）
+ *  - 纯 "resume"（自动续跑 CLI/守护生成的续跑会话）
+ * 这些不应出现在任务列表里。
+ */
+const NOISE_SESSION_TITLE_PATTERNS = [
+  /^resume$/i,
+  /^resume\s*$/i,
+  /^\(?untitled\)?$/i,
+];
+
+/** 判断是否为无意义/自动续跑产物会话（非用户任务） */
+export function isNoiseSession(title: string): boolean {
+  const trimmed = (title ?? "").trim();
+  if (!trimmed) return true; // 空标题视为无意义
+  return NOISE_SESSION_TITLE_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
 /**
@@ -353,8 +373,12 @@ export function listCodexSessions(env: NodeJS.ProcessEnv = process.env): Array<
       };
 
       let activity: SessionActivity = "unknown";
+      const nowSec = Math.floor(Date.now() / 1000);
+      // threads.updated_at 非常新（最近 3 分钟内）说明 Codex 进程还在活跃写入该会话，
+      // 即使 thread_turns 还没落 inProgress 行也算"进行中"（turns 落库有延迟）。
+      const freshUpdated = updatedMs > 0 && nowSec - updatedMs <= 180;
       if (!turn) {
-        activity = "idle";
+        activity = freshUpdated ? "running" : "idle";
       } else if (turn.status === "failed" && turn.error_json) {
         let message = "";
         try {
@@ -377,7 +401,8 @@ export function listCodexSessions(env: NodeJS.ProcessEnv = process.env): Array<
           base.lastError = message.slice(0, 300);
         }
       } else if (turn.status === "completed") {
-        activity = "done";
+        // 已完成但 updated_at 还在刷新：可能正在开启新一轮（桌面端续聊/续跑）
+        activity = freshUpdated ? "running" : "done";
       } else if (
         turn.status === "inProgress"
         || turn.status === "in_progress"
@@ -387,7 +412,8 @@ export function listCodexSessions(env: NodeJS.ProcessEnv = process.env): Array<
         activity = "running";
       } else if (turn.status === "interrupted") {
         // 被手动暂停/中止（思考或执行过程中，没有结论输出）
-        activity = "paused";
+        // 若 updated_at 又在刷新，说明用户重新播放（继续）了
+        activity = freshUpdated ? "running" : "paused";
       } else {
         activity = "idle";
       }
@@ -395,9 +421,13 @@ export function listCodexSessions(env: NodeJS.ProcessEnv = process.env): Array<
       results.push({ ...base, activity });
     }
 
-    // 过滤内部代理会话（agent history 等）与内部/工具目录（codex-auto-resume 等），只留用户任务会话
+    // 过滤内部代理会话（agent history 等）、内部/工具目录（codex-auto-resume 等）
+    // 与无意义/自动续跑产物（空标题、纯 resume），只留用户任务会话
     const userSessions = results.filter(
-      (session) => !isInternalSession(session.title) && !isInternalCwd(session.cwd)
+      (session) =>
+        !isInternalSession(session.title)
+        && !isInternalCwd(session.cwd)
+        && !isNoiseSession(session.title)
     );
 
     userSessions.sort((a, b) => (b.updatedAt < a.updatedAt ? -1 : b.updatedAt > a.updatedAt ? 1 : 0));
