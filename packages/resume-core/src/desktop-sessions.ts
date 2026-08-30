@@ -20,6 +20,12 @@ import path from "node:path";
 import readline from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import type { RateLimitClassification } from "./rate-limit.js";
+import {
+  summarizeSession,
+  recentSummaries,
+  isSessionStalled,
+  idleMinutes,
+} from "./transcript.js";
 
 export type DesktopSession = {
   threadId: string;
@@ -33,6 +39,14 @@ export type DesktopSession = {
   limitKind?: string;
   /** The raw last error message (trimmed, length-capped). */
   lastError?: string;
+  /** 最近助手汇报摘要（转录解析，仅活跃会话） */
+  lastSummary?: string | null;
+  /** 最近助手汇报时间（ISO） */
+  lastActivityAt?: string | null;
+  /** 卡住标记：最近汇报后超过 30 分钟无新活动 */
+  stalled?: boolean;
+  /** 静默分钟数 */
+  idleMinutes?: number | null;
 };
 
 /** 会话运行状态（看板用）：running=正在跑 / waiting=已停等额度 / idle=空闲 / done=已完成 */
@@ -359,6 +373,25 @@ export function listCodexSessions(env: NodeJS.ProcessEnv = process.env): Array<
     const userSessions = results.filter((session) => !isInternalSession(session.title));
 
     userSessions.sort((a, b) => (b.updatedAt < a.updatedAt ? -1 : b.updatedAt > a.updatedAt ? 1 : 0));
+
+    // 附加转录摘要（最近助手汇报 + 卡住标记）。只对非 done 的会话做，
+    // 且最多处理 MAX_TRANSCRIPT_SESSIONS 个（性能保护）。
+    const activeSessions = userSessions.filter((session) => session.activity !== "done");
+    const MAX_TRANSCRIPT_SESSIONS = 60;
+    for (const session of activeSessions.slice(0, MAX_TRANSCRIPT_SESSIONS)) {
+      try {
+        const transcript = summarizeSession(session.threadId, env);
+        if (transcript.lastMessageTs) {
+          session.lastSummary = recentSummaries(transcript, 1, 200)[0] ?? null;
+          session.lastActivityAt = transcript.lastMessageTs;
+          session.stalled = isSessionStalled(transcript, 30);
+          session.idleMinutes = idleMinutes(transcript);
+        }
+      } catch {
+        // transcript read failure is non-fatal for the list
+      }
+    }
+
     return userSessions;
   } catch (error) {
     // DB may not exist yet (fresh Codex install) — return empty.

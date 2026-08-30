@@ -6,6 +6,15 @@ export { createJob, loadJob, loadJobs, saveJob, summarizeJob } from "./store.js"
 export { runJobOnce } from "./supervisor.js";
 export { runDaemon } from "./daemon.js";
 export { scanDesktopSessions, pickSessions, listCodexSessions, isInternalSession } from "./desktop-sessions.js";
+export {
+  loadSessionIndex,
+  findRollouts,
+  parseRollout,
+  summarizeSession,
+  recentSummaries,
+  isSessionStalled,
+  idleMinutes,
+} from "./transcript.js";
 export { validateThreadResume, resumeWithAppServer } from "./app-server/supervisor.js";
 export { runCodexCli, buildCodexArgs } from "./codex-cli.js";
 export { defaultStateDir } from "./paths.js";
