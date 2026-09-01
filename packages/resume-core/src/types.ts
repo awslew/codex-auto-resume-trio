@@ -68,6 +68,12 @@ export type RateLimitSnapshot = {
   [key: string]: unknown;
 };
 
+/** V2 5 小时额度输入的规范化类型；state 语义见 five-hour-quota.ts。 */
+export type FiveHourQuotaInput = {
+  state: "POSITIVE" | "ZERO" | "UNKNOWN";
+  resetAt?: number;
+};
+
 export type RateLimitResponse = {
   rateLimits?: RateLimitSnapshot | null;
   rateLimitsByLimitId?: Record<string, RateLimitSnapshot | undefined> | null;

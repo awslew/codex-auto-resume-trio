@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { DatabaseSync } from "node:sqlite";
+import type { DesktopSessionData, DesktopTurnRow } from "./desktop-session-observation.js";
 import type { RateLimitClassification } from "./rate-limit.js";
 import {
   summarizeSession,
@@ -56,6 +57,24 @@ export type DesktopSession = {
  * idle 已并入 done（用户要求四类标签，空闲与已完成不重复显示）。
  */
 export type SessionActivity = "running" | "waiting" | "paused" | "done" | "unknown";
+
+/**
+ * 可信会话观测的纯映射/类型/时间校验已移入 desktop-session-observation.ts
+ * （零 node:sqlite 依赖，测试可直连）。本模块仅以类型形式重导出并负责 sqlite
+ * 查询（collectDesktopSessionData）。消费方（T4 服务端 API / T2 monitor）只读
+ * 消费，不写数据库。
+ */
+export type {
+  SessionObservationState,
+  SessionObservationConfidence,
+  SessionObservation,
+  DesktopTurnRow,
+  DesktopSessionRow,
+  DesktopSessionData,
+} from "./desktop-session-observation.js";
+export { observeDesktopSession, observeDesktopSessions } from "./desktop-session-observation.js";
+export { isPlausibleTurnTs, isOrderableTurnTs, SESSION_FRESH_WINDOW_MS } from "./desktop-session-observation.js";
+export { SESSION_OBSERVATION_REVISION } from "./desktop-session-observation.js";
 
 function codexHome(env: NodeJS.ProcessEnv = process.env): string {
   return env.CODEX_HOME ?? path.join(homedir(), ".codex");
@@ -494,6 +513,38 @@ export function listCodexSessions(env: NodeJS.ProcessEnv = process.env): Array<
   } finally {
     threadsCon?.close();
     turnsCon?.close();
+  }
+}
+
+/**
+ * 默认批量采集器：从 Codex 桌面库读取 threads + thread_turns（只读）。
+ * 已与 listCodexSessions 共享的打开方式一致：mode=ro，绝不写用户数据库。
+ */
+export function collectDesktopSessionData(env: NodeJS.ProcessEnv): Map<string, DesktopSessionData> {
+  const { threads: threadsDb, turns: turnsDb } = dbPath(env);
+  const threadsCon = openRo(threadsDb);
+  const turnsCon = openRo(turnsDb);
+  try {
+    const threadRows = threadsCon
+      .prepare(`SELECT id, updated_at FROM threads`)
+      .all() as Array<{ id: string; updated_at: number | null }>;
+    const turnRows = turnsCon
+      .prepare(`SELECT thread_id, status, error_json, started_at FROM thread_turns`)
+      .all() as Array<DesktopTurnRow & { thread_id: string }>;
+
+    const byThread = new Map<string, DesktopSessionData>();
+    for (const t of threadRows) {
+      byThread.set(t.id, { threadId: t.id, session: { updated_at: t.updated_at }, turns: [] });
+    }
+    for (const r of turnRows) {
+      const entry = byThread.get(r.thread_id);
+      if (!entry) continue; // 孤儿 turn：所属 thread 不在 threads 表，跳过
+      entry.turns.push({ status: r.status, started_at: r.started_at, error_json: r.error_json });
+    }
+    return byThread;
+  } finally {
+    threadsCon.close();
+    turnsCon.close();
   }
 }
 

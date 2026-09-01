@@ -33,6 +33,9 @@ npm run start:taskboard   # 打开 http://127.0.0.1:47823
 - Taskboard：`apps/taskboard/README.md`
 - Resume Core：`packages/resume-core/README.md`
 - PGM Collector：`extensions/pgm-collector/README.md`
+- Auto-Resume V2（taskboard 内置自动续跑调度器）：设计 `AUTO_RESUME_V2_DESIGN.md`、
+  执行计划 `AUTO_RESUME_V2_EXECUTION_PLAN.md`、**运维与故障排查 `AUTO_RESUME_V2_OPERATIONS.md`
+  （开关/模式/状态目录/相位语义/上线流程/已知缺口）**
 
 ## 融合路线
 
