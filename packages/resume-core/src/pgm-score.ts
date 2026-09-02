@@ -97,7 +97,8 @@ export function statusOf(
   return { state, ageMinutes };
 }
 
-/** 把最近汇报时间戳转成乐谱色块（pgm_dash.build_beats 移植） */
+/** 把最近汇报时间戳转成乐谱色块（pgm_dash.build_beats 移植）。时间戳为 UTC ISO，
+ * 色块标签转本地时区显示（HH:mm），与前端 timeLabel 一致。 */
 export function buildBeats(messages: RolloutMessage[], top = 4): PgmBeat[] {
   const times = messages.map((message) => Date.parse(message.ts));
   const beats: PgmBeat[] = [];
@@ -107,12 +108,20 @@ export function buildBeats(messages: RolloutMessage[], top = 4): PgmBeat[] {
     const gap = i === 0 ? 4 : (ts - times[i - 1]) / 60_000;
     const h = Math.max(12, Math.min(60, 12 + gap * 0.5));
     beats.push({
-      ts: messages[i].ts.slice(11, 16),
+      ts: localTimeLabel(messages[i].ts),
       h: Math.round(h),
       newest: i === times.length - 1,
     });
   }
   return beats.slice(-top);
+}
+
+/** UTC ISO -> 本地时区 HH:mm（与时区无关的纯计算，避免环境 locale 差异）。 */
+function localTimeLabel(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 /** 把长项目名压成干净短标题（pgm_dash.short_name 移植） */

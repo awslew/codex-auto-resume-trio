@@ -10,8 +10,19 @@
  *  - parseRollout(path)：解析单个 rollout，取助手文本汇报 + 最后一条记录
  *  - summarizeSession(sid)：汇总某会话的最近汇报（pgm 的 gather_projects 单会话版）
  *  - isSessionStalled(session)：卡住检测（最近汇报后长时间无新活动）
+ *
+ * 性能（2026-09 修复）：~/.codex 转录可达 GB 级（本机 491 个 rollout / 1.2GB），
+ * 看板「项目总谱」「自动续跑」每次请求都全量重扫重解析导致 20-30s 等待。
+ * 这里加两层内存缓存（模块级，进程常驻）：
+ *  - findRollouts 缓存：sid -> 文件列表。首次全树扫描建索引，之后 O(1)；
+ *    目录 mtime 变化（新 rollout 落盘）时自动重建。
+ *  - parseRollout 缓存：path -> 解析结果，按 (size, mtime) 失效；
+ *    文件未变化时跳过整文件 JSON 解析。
+ * 提取后的消息文本很小（本机 6601 条 ≈ 2MB），内存占用可忽略。
+ * 测试用 mkdtemp 临时目录（env 注入 CODX_HOME），缓存 key 含 codexHome，
+ * 隔离测试互不污染。
  */
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
@@ -50,18 +61,61 @@ export function loadSessionIndex(env: NodeJS.ProcessEnv = process.env): Map<stri
   return index;
 }
 
-/** ~/.codex/sessions/YYYY/MM/DD/rollout-*-<sid>.jsonl，按时间排序（pgm.find_rollouts 移植） */
+/**
+ * findRollouts 目录索引缓存：全部 rollout 路径列表 + 目录 mtime 签名。
+ * 查询时 filter endsWith(`-${sid}.jsonl`)（与旧 findRollouts 语义完全一致；
+ * sid 内部含连字符，无法按最后一段 O(1) 分组，但 491 个文件 × filter 仅毫秒级）。
+ * key 用 codexHome 隔离（测试注入临时 CODX_HOME 时不污染真实索引）。
+ */
+const rolloutIndexCache = new Map<
+  string,
+  { signature: string; files: string[] }
+>();
+
+/** 目录树的 mtime 签名：扫描时记录每个存在目录的 mtimeMs，变化即索引过期。 */
+function directorySignature(root: string): string {
+  let signature = "";
+  try {
+    for (const year of readdirSync(root)) {
+      const yearPath = path.join(root, year);
+      signature += `${year}:${statSync(yearPath).mtimeMs};`;
+      for (const month of readdirSync(yearPath)) {
+        const monthPath = path.join(yearPath, month);
+        signature += `${month}:${statSync(monthPath).mtimeMs};`;
+        for (const day of readdirSync(monthPath)) {
+          const dayPath = path.join(monthPath, day);
+          signature += `${day}:${statSync(dayPath).mtimeMs};`;
+        }
+      }
+    }
+  } catch {
+    // 树不存在或不可读时签名固定为空串：与"空树"一致，代价是每次重扫（安全）。
+  }
+  return signature;
+}
+
+/**
+ * ~/.codex/sessions/YYYY/MM/DD/rollout-*-<sid>.jsonl，按时间排序（pgm.find_rollouts 移植）。
+ * 带目录索引缓存：首次全树扫描一次，之后按 sid filter 命中；目录 mtime 变化自动重建。
+ */
 export function findRollouts(sid: string, env: NodeJS.ProcessEnv = process.env): string[] {
   const base = path.join(codexHome(env), "sessions");
-  const out: string[] = [];
-  if (!existsSync(base)) return out;
-  let years: string[];
-  try {
-    years = readdirSync(base);
-  } catch {
-    return out;
-  }
-  for (const year of years) {
+  if (!existsSync(base)) return [];
+
+  const signature = directorySignature(base);
+  const cached = rolloutIndexCache.get(base);
+  const files = cached && cached.signature === signature
+    ? cached.files
+    : rebuildRolloutIndex(base, signature);
+
+  return files
+    .filter((file) => file.endsWith(`-${sid}.jsonl`))
+    .sort();
+}
+
+function rebuildRolloutIndex(base: string, signature: string): string[] {
+  const files: string[] = [];
+  for (const year of readdirSync(base)) {
     const yearPath = path.join(base, year);
     let months: string[];
     try {
@@ -79,26 +133,43 @@ export function findRollouts(sid: string, env: NodeJS.ProcessEnv = process.env):
       }
       for (const day of days) {
         const dayPath = path.join(monthPath, day);
-        let files: string[];
+        let entries: string[];
         try {
-          files = readdirSync(dayPath);
+          entries = readdirSync(dayPath);
         } catch {
           continue;
         }
-        for (const file of files) {
-          if (file.startsWith("rollout-") && file.endsWith(`-${sid}.jsonl`)) {
-            out.push(path.join(dayPath, file));
+        for (const file of entries) {
+          if (file.startsWith("rollout-") && file.endsWith(".jsonl")) {
+            files.push(path.join(dayPath, file));
           }
         }
       }
     }
   }
-  out.sort();
-  return out;
+  rolloutIndexCache.set(base, { signature, files });
+  return files;
 }
 
-/** 解析单个 rollout：助手文本汇报 + 最后一条记录（pgm.parse_rollout 移植） */
+/**
+ * parseRollout 结果缓存：按 (size, mtime) 失效。
+ * key 用绝对路径；文件未变化时跳过整文件读取与逐行 JSON 解析。
+ */
+const parseCache = new Map<string, { size: number; mtimeMs: number; result: { messages: RolloutMessage[]; lastItem: SessionTranscript["lastItem"] } }>();
+
+/** 解析单个 rollout：助手文本汇报 + 最后一条记录（pgm.parse_rollout 移植）。带文件级缓存。 */
 export function parseRollout(filePath: string): { messages: RolloutMessage[]; lastItem: SessionTranscript["lastItem"] } {
+  let stat;
+  try {
+    stat = statSync(filePath);
+  } catch {
+    return { messages: [], lastItem: null };
+  }
+  const cached = parseCache.get(filePath);
+  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+    return cached.result;
+  }
+
   const messages: RolloutMessage[] = [];
   let lastItem: SessionTranscript["lastItem"] = null;
   let raw: string;
@@ -137,7 +208,9 @@ export function parseRollout(filePath: string): { messages: RolloutMessage[]; la
       }
     }
   }
-  return { messages, lastItem };
+  const result = { messages, lastItem };
+  parseCache.set(filePath, { size: stat.size, mtimeMs: stat.mtimeMs, result });
+  return result;
 }
 
 /** 汇总某会话的全部转录：合并所有 rollout 的助手汇报（pgm.gather_projects 单会话版） */
