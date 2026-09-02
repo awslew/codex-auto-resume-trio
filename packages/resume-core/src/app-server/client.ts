@@ -51,8 +51,23 @@ export class AppServerClient extends EventEmitter {
     this.notify("initialized");
   }
 
-  stop(): void {
-    this.child?.kill();
+  /** kill 并等待子进程真正退出：Windows 上 cwd/文件句柄要等进程死透才释放，
+   * 立即返回会让调用方（测试清理临时目录等）与进程终止竞态。 */
+  async stop(): Promise<void> {
+    const child = this.child;
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    child.kill();
+    // SIGTERM 无响应时 2s 强杀，总体 3s 封顶，保证 stop 不悬挂调用方。
+    const escalation = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch { /* 已退出 */ }
+    }, 2_000);
+    escalation.unref?.();
+    await Promise.race([
+      exited,
+      new Promise<void>((resolve) => setTimeout(resolve, 3_000).unref?.()),
+    ]);
+    clearTimeout(escalation);
   }
 
   request(method: string, params?: unknown, timeoutMs = 10_000): Promise<unknown> {

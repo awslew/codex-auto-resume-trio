@@ -22,7 +22,7 @@ export async function validateThreadResume(
       20_000
     );
   } finally {
-    client.stop();
+    await client.stop();
   }
 }
 
@@ -68,6 +68,6 @@ export async function resumeWithAppServer(
     await completed;
     return { exitCode: 0, threadId: job.threadId, completed: true, failed: false, rateLimit: false };
   } finally {
-    client.stop();
+    await client.stop();
   }
 }

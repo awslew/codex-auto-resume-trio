@@ -43,7 +43,7 @@ export function createAppServerQuotaReader(options: { cwd: string; codexBin?: st
       }
       return { state: quota.state, ...(quota.resetAt !== undefined ? { resetAt: quota.resetAt } : {}) };
     } finally {
-      client.stop();
+      await client.stop();
     }
   };
 }
@@ -105,7 +105,7 @@ export function createAppServerSender(options: { cwd: string; codexBin?: string;
         // （决策A；outbox 写 confirmedAt，monitor 同轮收敛清 latch+outbox）。
         return { ok: true, confirmed: true, detail: { turnCompleted: true } };
       } finally {
-        client.stop();
+        await client.stop();
       }
     },
   };
