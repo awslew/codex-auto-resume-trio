@@ -13,12 +13,17 @@ apps/taskboard/.data/
 apps/taskboard/.tmp/
 apps/taskboard/.wrangler/
 
+# python
+__pycache__/
+
 # pgm-collector runtime data
 extensions/pgm-collector/runtime/
-extensions/pgm-collector/__pycache__/
 
 # os / editor
 .DS_Store
+
+# 本地 UI 验证截图产物
+screenshots/
 
 # original taskboard checkout (migrated into apps/taskboard)
 dashi-taskboard/

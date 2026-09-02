@@ -28,6 +28,28 @@ npm run build:taskboard
 npm run start:taskboard   # 打开 http://127.0.0.1:47823
 ```
 
+## 开机自启 + 系统托盘（Windows）
+
+Taskboard 服务器以**计划任务 + 系统托盘**方式在后台常驻：
+
+- **计划任务** `taskboard-server-47823`：开机（登录）自动启动，失败自动重启（3 次/1 分钟）。
+  入口为 `apps/taskboard/scripts/taskboard-launcher.vbs`（wscript 隐藏窗口启动，
+  不再弹黑控制台窗口）。
+- **系统托盘**：`scripts/taskboard-tray.py`（pythonw + pystray）显示托盘图标，
+  **左键/双击打开看板**（http://127.0.0.1:47823），右键菜单可查看服务器状态、
+  **「退出」= 停止服务器并移除托盘**（taskkill 整棵进程树）。
+- 链路：计划任务 → `taskboard-launcher.vbs`（隐藏窗口）→ `taskboard-launcher.mjs`
+  （拉起 server + 托盘，server 崩溃自动重启）→ `server/index.mjs`（47823 端口）。
+
+重新注册计划任务（需管理员权限）：
+
+```powershell
+schtasks /Create /TN taskboard-server-47823 /XML taskboard-task.xml /F
+```
+
+旧版独立 API 配额仪表盘（`D:\apiquota-dashboard`，注册表 `APIQuotaDashboard` 自启）
+已被移除——看板自带配额 API（`/api/quota` 等），无需重复常驻。
+
 ## 各组件文档
 
 - Taskboard：`apps/taskboard/README.md`
