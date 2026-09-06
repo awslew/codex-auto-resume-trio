@@ -27,6 +27,15 @@ export class AppServerClient extends EventEmitter {
     super();
   }
 
+  /** 子进程是否仍存活且 stdin 可写（turn 常驻宿主复用判定用）。 */
+  get running(): boolean {
+    const child = this.child;
+    return child !== undefined
+      && child.exitCode === null
+      && child.signalCode === null
+      && (child.stdin?.writable ?? false);
+  }
+
   async start(): Promise<void> {
     const raw = this.options.codexBin ?? resolveCodexBin();
     const bin =

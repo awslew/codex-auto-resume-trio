@@ -36,6 +36,9 @@ export interface SendOutcome {
   confirmed?: boolean;
   /** 明确额度失败（不计技术失败、不重试计数）；undefined 表示未知/非额度失败。 */
   quotaBlocked?: boolean;
+  /** 目标会话被其它写者占用（Codex thread 单写者锁，如桌面端开着该会话）。
+   * 暂时性 busy：不计技术失败、保留 attempt，下一轮自动重试。 */
+  writerBusy?: boolean;
   error?: string;
   /** 发送结果详情（诊断用）。 */
   detail?: unknown;
@@ -286,6 +289,11 @@ class FileAttemptOutbox implements AttemptOutbox {
 
     if (outcome.quotaBlocked === true) {
       await this.markQuotaBlocked(sendAttempt);
+      return outcome;
+    }
+    if (outcome.writerBusy === true) {
+      // 桌面端等写者占用（2026-09-06 线上）：暂时性 busy 与 quotaBlocked 同类，
+      // 不计技术失败、不落失败标记；monitor 保持 RESUME_QUEUED 下轮重试。
       return outcome;
     }
     // sender 技术失败：只增 1（修复 B：failureCount 唯一真相源）。

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { appendFile, mkdir } from "node:fs/promises";
+import path from "node:path";
 import { autoResumeReducer, armingValidUntil } from "./auto-resume-reducer.js";
 import type { AutoResumeWatch, DetectionSnapshot, ResumeAttempt, SessionState, TransitionDecision } from "./auto-resume-types.js";
 import { createWatchStore, type WatchStore } from "./auto-resume-store.js";
@@ -38,8 +40,19 @@ import { withThreadLease, type ThreadLeaseOptions } from "./thread-lease.js";
 
 export const MAX_CONCURRENT_RESUMES_PER_CYCLE = 2;
 
+/** 每轮配额观测的原始追踪落盘（诊断专用；任何写失败都吞掉，绝不影响检测）。 */
+async function appendQuotaTrace(stateDir: string, entry: Record<string, unknown>): Promise<void> {
+  try {
+    const dir = path.join(stateDir, "logs");
+    await mkdir(dir, { recursive: true });
+    await appendFile(path.join(dir, "quota-observations.jsonl"), `${JSON.stringify(entry)}\n`, "utf8");
+  } catch {
+    // 诊断写失败不影响检测主流程。
+  }
+}
+
 export type SessionReader = (threadId: string) => Promise<SessionState>;
-export type QuotaReader = () => Promise<{ state: "POSITIVE" | "ZERO" | "UNKNOWN"; resetAt?: number }>;
+export type QuotaReader = () => Promise<{ state: "POSITIVE" | "ZERO" | "UNKNOWN"; resetAt?: number; raw?: unknown }>;
 export type TimeProvider = { now: () => number };
 
 export interface MonitorOptions {
@@ -121,6 +134,16 @@ export function createMonitor(options: MonitorOptions): { detect: (cycleId?: str
         const quota = await options.quotaReader();
         quotaState = quota.state;
         quotaResetAt = quota.resetAt;
+        // 原始响应逐轮落盘（诊断专用，best-effort）：2026-09-06 线上质疑
+        // “官方 2:25 恢复但 02:09 已发送”需要 ground truth 判定
+        // usedPercent 与真实封禁状态的关系，下轮耗尽周期即可对证。
+        void appendQuotaTrace(options.stateDir, {
+          detectedAt: new Date(options.clock.now()).toISOString(),
+          cycleId,
+          state: quotaState,
+          ...(quotaResetAt !== undefined ? { resetAt: quotaResetAt } : {}),
+          ...(quota.raw !== undefined ? { raw: quota.raw } : {}),
+        });
       } catch (error) {
         quotaOk = false;
         const message = error instanceof Error ? error.message : String(error);
@@ -280,6 +303,17 @@ export function createMonitor(options: MonitorOptions): { detect: (cycleId?: str
             return { error: message };
           }
 
+          // 发送前 resetAt 兜底守卫（2026-09-06 线上：官方 2:25 恢复但 02:09 已发送）：
+          // 中断时官方给出的窗口 reset 时间未到 → 本轮不发、留在 RESUME_QUEUED 下轮再试。
+          // 防止 usedPercent 滞后于真实封禁（<100% 但已被限额）的读取过早烧掉重试机会；
+          // resetAt 一过守卫自动放行，无需任何人工开关。
+          const latchResetAt = current.interruptionLatch?.quotaResetAt;
+          if (typeof latchResetAt === "number" && Number.isFinite(latchResetAt) && options.clock.now() < latchResetAt) {
+            const message = `official quota reset not reached (${new Date(latchResetAt).toISOString()}); send deferred`;
+            await store.upsert({ ...current, phase: "RESUME_QUEUED", lastError: message, updatedAt: new Date(options.clock.now()).toISOString() });
+            return { error: message };
+          }
+
           // Prefer the durable attempt (and its cwd) on recovery. Only a
           // missing record is materialized from the leased watch.
           const persisted = (await outbox.loadPending()).find((attempt) => attempt.id === entry.attemptId);
@@ -326,6 +360,12 @@ export function createMonitor(options: MonitorOptions): { detect: (cycleId?: str
           if (sent.quotaBlocked === true) {
             await store.upsert({ ...current, phase: "WAITING_FOR_5H_QUOTA", lastError: message, updatedAt: new Date(options.clock.now()).toISOString() });
             return { error: `quota blocked; attempt returned to waiting: ${message}` };
+          }
+          if (sent.writerBusy === true) {
+            // 目标会话被桌面端等写者占用（Codex thread 单写者锁）：暂时性 busy，
+            // 不计技术失败、保持在 RESUME_QUEUED，下一轮自动重试（写者释放即成功）。
+            await store.upsert({ ...current, phase: "RESUME_QUEUED", lastError: message, updatedAt: new Date(options.clock.now()).toISOString() });
+            return { error: `writer busy; attempt kept queued: ${message}` };
           }
           if (sent.detail !== undefined && (sent.detail as { givingUp?: boolean }).givingUp === true) {
             await store.upsert({ ...current, phase: "NEEDS_ATTENTION", lastError: message, updatedAt: new Date(options.clock.now()).toISOString() });

@@ -195,6 +195,26 @@ describe("resume-attempt — 幂等 id 与 outbox", () => {
     expect(stored.quotaBlockedAt).toBeDefined();
   });
 
+  it("writerBusy（桌面端占用）：不计技术失败、不落失败标记，下轮仍可重试", async () => {
+    const stateDir = tempStateDir();
+    const outbox = createAttemptOutbox({
+      stateDir,
+      sender: { async send() { return { ok: false, writerBusy: true, error: "thread already has an active writer" }; } },
+      confirmer: { async confirm() { return { state: "NOT_STARTED" as const }; } },
+      clock,
+    });
+    const outcome = await outbox.send(makeAttempt());
+    expect(outcome.writerBusy).toBe(true);
+    const pending = await outbox.loadPending();
+    expect(pending[0].failureCount).toBe(0); // 不计技术失败。
+    const stored = JSON.parse(readFileSync(path.join(attemptsDir(stateDir), `${makeAttempt().id}.json`), "utf8"));
+    expect(stored.quotaBlockedAt).toBeUndefined();
+    // 第二轮重试仍会真正调用 sender（不因 writerBusy 进入 giving up）。
+    const second = await outbox.send(makeAttempt());
+    expect(second.writerBusy).toBe(true);
+    expect((await outbox.loadPending())[0].failureCount).toBe(0);
+  });
+
   it("remove 移除 outbox 记录（清除 latch 时使用）；幂等", async () => {
     const stateDir = tempStateDir();
     const outbox = createAttemptOutbox({ stateDir, clock });

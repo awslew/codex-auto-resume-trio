@@ -274,8 +274,9 @@ export function scanDesktopSessions(env: NodeJS.ProcessEnv = process.env): Deskt
 /**
  * 内部代理会话标题特征（Codex 子代理/工具注入的会话，不是用户任务）。
  * 这些会话不应出现在"任务列表"里让用户勾选续跑。
- * 含 Codex 桌面新建会话的模板标题（# Files mentioned by the user 等），
- * 那是系统生成的会话骨架，不是用户主动发起的具体任务。
+ * 注意：Codex 桌面"附件模板头"（# Files mentioned by the user）不在此列——
+ * 首条消息带附件的真实任务标题也是这个头（2026-09-06 demo 交接会话误杀），
+ * 由 isAttachmentTemplateSkeleton 只过滤无实质内容的空壳。
  */
 const INTERNAL_SESSION_TITLE_PATTERNS = [
   /^the following is the codex agent history/i,
@@ -284,8 +285,27 @@ const INTERNAL_SESSION_TITLE_PATTERNS = [
   /^系统提示/i,
   /^system prompt/i,
   /^internal/i,
-  /^#\s*files mentioned by the user/i,
 ];
+
+/** Codex 桌面附件模板头：首条消息带附件时，桌面用消息原文作会话标题。 */
+const ATTACHMENT_TEMPLATE_HEADER_RE = /^#\s*files mentioned by the user/i;
+
+/**
+ * 判断是否为"附件模板空壳"标题（非用户任务）：模板头之后既没有文件清单段
+ * （## 文件名: 路径）也没有用户请求正文（## My request: 内容）。
+ * 真实任务标题截断到 120 字符时仍落在文件清单段内，"## My request:" 可能
+ * 已被截掉，所以两条证据任一存在即视为真实任务。
+ */
+export function isAttachmentTemplateSkeleton(title: string): boolean {
+  const trimmed = (title ?? "").trim();
+  if (!trimmed) return false; // 空标题由 isNoiseSession 处理
+  if (!ATTACHMENT_TEMPLATE_HEADER_RE.test(trimmed)) return false;
+  // 文件清单段 = "## 标题" 行且不是 "## My request:" 标记行（空请求段的
+  // "## My request:" 本身也匹配 "##\s+\S"，必须排除，否则空壳漏判为真实任务）。
+  const hasFileListSection = /(^|\n)##(?!\s*my request\s*:)\s+\S/i.test(trimmed);
+  const hasRequestContent = /##\s*my request:\s*\S/i.test(trimmed);
+  return !hasFileListSection && !hasRequestContent;
+}
 
 /** 判断是否为内部代理会话（非用户任务） */
 export function isInternalSession(title: string): boolean {
@@ -476,10 +496,11 @@ export function listCodexSessions(env: NodeJS.ProcessEnv = process.env): Array<
 
     // 过滤内部代理会话（agent history 等）、子代理会话（guardian/thread_spawn/exec source）、
     // 内部/工具目录（codex-auto-resume 等）与无意义/自动续跑产物（空标题、纯 resume），
-    // 只留用户发起的任务会话
+    // 以及"附件模板空壳"（只有模板头、无文件清单无请求正文），只留用户发起的任务会话
     const userSessions = results.filter(
       (session) =>
         !isInternalSession(session.title)
+        && !isAttachmentTemplateSkeleton(session.title)
         && !isInternalCwd(session.cwd)
         && !isNoiseSession(session.title)
         && !isInternalSource(session.source)

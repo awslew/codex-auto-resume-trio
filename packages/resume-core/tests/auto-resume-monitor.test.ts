@@ -383,6 +383,66 @@ describe("auto-resume-monitor — 原子迁移与幂等", () => {
     expect(t1after!.lastError).toContain("giving up");
   });
 
+  it("writerBusy（桌面端占用）：不计技术失败、保持 RESUME_QUEUED 下轮重试（2026-09-06 线上回归）", async () => {
+    const stateDir = tempStateDir();
+    const store = createWatchStore(stateDir);
+    let calls = 0;
+    const sender = {
+      async send() {
+        calls++;
+        return { ok: false, writerBusy: true as const, error: "thread t1 already has an active writer" };
+      },
+    };
+    // NOT_STARTED：允许每轮补发（模拟重试路径）。
+    const outbox = createAttemptOutbox({ stateDir, sender, confirmer: { async confirm() { return { state: "NOT_STARTED" as const }; } } });
+    const sessionReader = vi.fn().mockResolvedValue("STOPPED" as const);
+    const quotaReader = vi.fn().mockResolvedValue({ state: "POSITIVE" as const });
+
+    await store.upsert(latchedWatch({ threadId: "t1" }));
+    const monitor = createMonitor({ stateDir, quotaReader, sessionReader, clock, ownerToken: "owner-1", store, outbox });
+
+    await monitor.detect();
+    await monitor.detect();
+    await monitor.detect();
+    const t1 = await store.load("t1");
+    expect(calls).toBe(3); // 每轮都重试，绝不因 writerBusy 放弃。
+    expect(t1!.phase).toBe("RESUME_QUEUED"); // 绝不 NEEDS_ATTENTION。
+    expect(t1!.lastError).toContain("already has an active writer");
+    expect(t1!.interruptionLatch).toBeDefined();
+  });
+
+  it("发送前 resetAt 兜底守卫：官方 reset 时间未到 → 本轮 0 发送、留在 RESUME_QUEUED（2026-09-06 线上回归）", async () => {
+    const stateDir = tempStateDir();
+    const store = createWatchStore(stateDir);
+    let calls = 0;
+    const sender = { async send() { calls++; return { ok: true }; } };
+    const outbox = createAttemptOutbox({ stateDir, sender, confirmer: { async confirm() { return { state: "CONFIRMED" as const }; } } });
+    const sessionReader = vi.fn().mockResolvedValue("STOPPED" as const);
+    const quotaReader = vi.fn().mockResolvedValue({ state: "POSITIVE" as const });
+
+    await store.upsert(latchedWatch({
+      threadId: "t1",
+      phase: "RESUME_QUEUED",
+      activeAttemptId: resumeAttemptId("t1", "cycle-2:thread-1"),
+      interruptionLatch: {
+        id: "cycle-2:thread-1",
+        detectedAt: new Date(T0 + STEP_MS).toISOString(),
+        evidenceCycleId: "cycle-2",
+        previousRunningCycleId: "cycle-1",
+        quotaResetAt: T0 + 60_000, // 官方 reset 在 1 分钟后；当前 clock=T0 未到。
+      },
+    }));
+    const monitor = createMonitor({ stateDir, quotaReader, sessionReader, clock, ownerToken: "owner-1", store, outbox });
+
+    const report = await monitor.detect();
+    expect(calls).toBe(0); // 守卫拦截，绝不发送。
+    expect(report.resumedCount).toBe(0);
+    const t1 = await store.load("t1");
+    expect(t1!.phase).toBe("RESUME_QUEUED"); // 留队，resetAt 过后下轮自然放行。
+    expect(t1!.lastError).toContain("official quota reset not reached");
+    expect(t1!.interruptionLatch).toBeDefined();
+  });
+
   it("明确额度失败 → 回到 WAITING_FOR_5H_QUOTA，不计技术失败、保留 latch", async () => {
     const stateDir = tempStateDir();
     const store = createWatchStore(stateDir);
