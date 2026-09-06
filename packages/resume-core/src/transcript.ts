@@ -23,6 +23,7 @@
  * 隔离测试互不污染。
  */
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
+import { readFile, stat as statAsync } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 
@@ -154,8 +155,44 @@ function rebuildRolloutIndex(base: string, signature: string): string[] {
 /**
  * parseRollout 结果缓存：按 (size, mtime) 失效。
  * key 用绝对路径；文件未变化时跳过整文件读取与逐行 JSON 解析。
+ * 同步 parseRollout 与异步 parseRolloutAsync 共享同一缓存，先到先填。
  */
 const parseCache = new Map<string, { size: number; mtimeMs: number; result: { messages: RolloutMessage[]; lastItem: SessionTranscript["lastItem"] } }>();
+
+type RolloutParseState = {
+  messages: RolloutMessage[];
+  lastItem: SessionTranscript["lastItem"];
+};
+
+/** 单行 rollout 记录的解析（sync/async 两版共用的唯一真相源）。 */
+function processRolloutLine(trimmed: string, state: RolloutParseState): void {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(trimmed) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  if (parsed.type !== "response_item") return;
+  const payload = (parsed.payload ?? {}) as Record<string, unknown>;
+  const ts = typeof parsed.timestamp === "string" ? parsed.timestamp : "";
+  state.lastItem = {
+    type: String(payload.type ?? ""),
+    role: String(payload.role ?? payload.name ?? ""),
+    ts,
+  };
+  if (payload.type === "message") {
+    const content = payload.content;
+    if (Array.isArray(content)) {
+      const text = content
+        .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+        .map((item) => (item.type === "output_text" && typeof item.text === "string" ? item.text : ""))
+        .join("");
+      if (text.trim()) {
+        state.messages.push({ ts, text: text.trim() });
+      }
+    }
+  }
+}
 
 /** 解析单个 rollout：助手文本汇报 + 最后一条记录（pgm.parse_rollout 移植）。带文件级缓存。 */
 export function parseRollout(filePath: string): { messages: RolloutMessage[]; lastItem: SessionTranscript["lastItem"] } {
@@ -170,45 +207,69 @@ export function parseRollout(filePath: string): { messages: RolloutMessage[]; la
     return cached.result;
   }
 
-  const messages: RolloutMessage[] = [];
-  let lastItem: SessionTranscript["lastItem"] = null;
+  const state: RolloutParseState = { messages: [], lastItem: null };
   let raw: string;
   try {
     raw = readFileSync(filePath, "utf8");
   } catch {
-    return { messages, lastItem };
+    return { messages: state.messages, lastItem: state.lastItem };
   }
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(trimmed) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-    if (parsed.type !== "response_item") continue;
-    const payload = (parsed.payload ?? {}) as Record<string, unknown>;
-    const ts = typeof parsed.timestamp === "string" ? parsed.timestamp : "";
-    lastItem = {
-      type: String(payload.type ?? ""),
-      role: String(payload.role ?? payload.name ?? ""),
-      ts,
-    };
-    if (payload.type === "message") {
-      const content = payload.content;
-      if (Array.isArray(content)) {
-        const text = content
-          .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
-          .map((item) => (item.type === "output_text" && typeof item.text === "string" ? item.text : ""))
-          .join("");
-        if (text.trim()) {
-          messages.push({ ts, text: text.trim() });
-        }
-      }
+    processRolloutLine(trimmed, state);
+  }
+  const result = { messages: state.messages, lastItem: state.lastItem };
+  parseCache.set(filePath, { size: stat.size, mtimeMs: stat.mtimeMs, result });
+  return result;
+}
+
+/** 单个解析分片的时间预算：超过即让出事件循环（I/O 与请求优先）。 */
+const PARSE_SLICE_BUDGET_MS = 25;
+
+const yieldToEventLoop = (): Promise<void> => new Promise<void>((resolve) => setImmediate(resolve));
+
+/**
+ * parseRollout 的异步版（2026-09-06 预热异步化）：结果与缓存完全一致，但读取走
+ * 异步 I/O、逐行 JSON 解析按 PARSE_SLICE_BUDGET_MS 时间预算分片让出事件循环。
+ * 背景：预热 GB 级转录时，旧版 50ms 分片预算约束不了"单个大文件的同步
+ * read+parse"（本机实测单次停顿 0.1-1.7s），会冻结整个服务的事件循环。
+ */
+export async function parseRolloutAsync(filePath: string): Promise<{ messages: RolloutMessage[]; lastItem: SessionTranscript["lastItem"] }> {
+  let stat;
+  try {
+    stat = await statAsync(filePath);
+  } catch {
+    return { messages: [], lastItem: null };
+  }
+  const cached = parseCache.get(filePath);
+  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+    return cached.result;
+  }
+
+  let raw: string;
+  try {
+    raw = await readFile(filePath, "utf8");
+  } catch {
+    return { messages: [], lastItem: null };
+  }
+
+  const state: RolloutParseState = { messages: [], lastItem: null };
+  let position = 0;
+  let sliceStartedAt = Date.now();
+  for (;;) {
+    const newline = raw.indexOf("\n", position);
+    const end = newline === -1 ? raw.length : newline;
+    const trimmed = raw.slice(position, end).trim();
+    if (trimmed) processRolloutLine(trimmed, state);
+    if (newline === -1) break;
+    position = newline + 1;
+    if (Date.now() - sliceStartedAt >= PARSE_SLICE_BUDGET_MS) {
+      await yieldToEventLoop();
+      sliceStartedAt = Date.now();
     }
   }
-  const result = { messages, lastItem };
+  const result = { messages: state.messages, lastItem: state.lastItem };
   parseCache.set(filePath, { size: stat.size, mtimeMs: stat.mtimeMs, result });
   return result;
 }
