@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+// adapter 现在引入 desktop-sessions（node:sqlite）；vitest 2.1.9 不识别该 builtin，
+// 与 desktop-sessions.test.ts 同法 mock（本文件不触发真实会话库路径）。
+vi.mock("node:sqlite", () => ({ DatabaseSync: class {} }));
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -119,7 +122,7 @@ describe("T6 production adapter ↔ fake app-server", () => {
     await expect(readFile(countsPath, "utf8").then((raw) => JSON.parse(raw))).rejects.toThrow();
   });
 
-  it("AR-15: 发送成功路径——POSITIVE 复核通过，thread/resume + turn/start 恰好各 1 次；turn/completed 证据 → confirmed", async () => {
+  it("AR-15: 发送成功路径——POSITIVE 复核通过，thread/resume + turn/start 恰好各 1 次；fire-and-forget 立即返回", async () => {
     const cwd = await tempDir("ar6-send-ok-cwd-");
     const countsPath = path.join(cwd, "fake-counts.json");
     const sender = createAppServerSender({ ...fakeCodexOptions("appserver-v2-positive", { FAKE_CODEX_COUNTS: countsPath }), cwd });
@@ -128,10 +131,12 @@ describe("T6 production adapter ↔ fake app-server", () => {
       { threadId: "thread-1", cwd }
     );
     expect(outcome.ok).toBe(true);
-    // 决策A：fake 在 turn/start 后 10ms 回发 turn/completed（thread-app）→ sender 等到
-    // 同 thread 完成证据 → 发送结果必须带 confirmed:true（outbox 据此写 confirmedAt、
-    // monitor 同轮收敛，绝不把正常发送丢进 NEEDS_ATTENTION）。
-    expect(outcome.confirmed).toBe(true);
+    // 决策A（2026-09-06 无人值守重构）：turn 可能运行数小时，发送侧在 turn/start
+    // 成功后立即返回（fire-and-forget），绝不等待 turn/completed、绝不杀常驻宿主。
+    // 确认职责移交生产 confirmer（宿主存活 / thread_turns 证据），因此发送结果
+    // 不再携带 confirmed:true（旧合同）。
+    expect(outcome.confirmed).toBeUndefined();
+    expect((outcome.detail as { fireAndForget?: boolean } | undefined)?.fireAndForget).toBe(true);
     const counts = JSON.parse(await readFile(countsPath, "utf8"));
     expect(counts.threadResume).toBe(1);
     expect(counts.turnStart).toBe(1);
@@ -147,7 +152,7 @@ describe("T6 production adapter ↔ fake app-server", () => {
     expect(result.state).toBe("UNKNOWN");
   });
 
-  it("决策A: 整链 CONFIRMED 收敛——生产 sender 等到 turn/completed → outbox 写 confirmedAt → monitor 同轮清 latch+activeAttempt+outbox → MONITORING；下一轮可信 COMPLETED+POSITIVE → disable", async () => {
+  it("决策A: 整链 CONFIRMED 收敛——fire-and-forget 发送 → 下一轮重放确认 CONFIRMED → outbox 写 confirmedAt → monitor 清 latch+activeAttempt+outbox → MONITORING；再下一轮可信 COMPLETED+POSITIVE → disable", async () => {
     const stateDir = await tempDir("ar6-confirmed-state-");
     const cwd = await tempDir("ar6-confirmed-cwd-");
     const quotaFile = path.join(stateDir, "quota.json");
@@ -159,11 +164,26 @@ describe("T6 production adapter ↔ fake app-server", () => {
     const store = createWatchStore(stateDir);
     let session = "RUNNING";
 
-    // 生产 adapter 注入（与 AR-15 同路径）：发送侧走伪 app-server（appserver-v2-file
-    // 对 turn/start 回发 turn/completed），确认器与 AR-06 整链相同的 fail-closed confirmer。
+    // 生产 adapter 注入（与 AR-15 同路径）：发送侧走伪 app-server（fire-and-forget，
+    // 立即返回不等待 turn/completed）。伪进程在 turn/start 后 10ms 自退出，生产
+    // confirmer 的"宿主存活 → CONFIRMED"证据在 fixture 下不可复现（该语义由
+    // app-server-confirmer 单测覆盖）——此处注入有状态确认 fake：发送后首轮
+    // UNKNOWN（模拟"发送已生效、证据未落库"的崩溃恢复窗口），重放轮 CONFIRMED，
+    // 完整覆盖决策A 的重放确认收敛。
+    let confirmCalls = 0;
     const quotaReader = createAppServerQuotaReader({ ...fakeCodexOptions("appserver-v2-file", { FAKE_CODEX_QUOTA_FILE: quotaFile }), cwd });
     const sender = createAppServerSender({ ...fakeCodexOptions("appserver-v2-file", { FAKE_CODEX_QUOTA_FILE: quotaFile, FAKE_CODEX_COUNTS: countsPath }), cwd });
-    const outbox = createAttemptOutbox({ stateDir, sender, confirmer: createAppServerConfirmer({ cwd }), clock });
+    const outbox = createAttemptOutbox({
+      stateDir,
+      sender,
+      confirmer: { async confirm() {
+        confirmCalls += 1;
+        return confirmCalls === 1
+          ? { state: "UNKNOWN" as const, reason: "no evidence yet (post-send, pre-confirm window)" }
+          : { state: "CONFIRMED" as const, reason: "resident turn host alive for thread" };
+      } },
+      clock,
+    });
     const monitor = createMonitor({
       stateDir,
       quotaReader,
@@ -185,9 +205,10 @@ describe("T6 production adapter ↔ fake app-server", () => {
     const cycle2 = await monitor.detect(newCycleId());
     expect(cycle2.watchOutcomes[0].nextPhase).toBe("WAITING_FOR_5H_QUOTA");
 
-    // cycle3：额度恢复 + 会话结束 → 恰好一次发送；production sender 等到 turn/completed
-    // → 返回 confirmed:true → outbox 写 confirmedAt → monitor 同轮收敛。
-    now += STEP_MS;
+    // cycle3：额度恢复 + 会话结束 → 恰好一次发送。时钟拨过官方 resetAt（T0+5h）：
+    // 发送前 resetAt 兜底守卫（2026-09-06 线上"官方 2:25 恢复但 02:09 已发送"）
+    // 规定发送不得早于官方窗口重置——恢复信号必须落在官方重置之后。
+    now = T0 + 5 * 3600_000 + STEP_MS;
     session = "STOPPED";
     await writeFile(quotaFile, JSON.stringify({ usedPercent: 40, windowDurationMins: 300, resetsAt: T0 + 5 * 3600_000 }));
     const cycle3 = await monitor.detect(newCycleId());
@@ -197,28 +218,40 @@ describe("T6 production adapter ↔ fake app-server", () => {
     expect(counts.threadResume).toBe(1);
     expect(counts.turnStart).toBe(1);
 
-    // 收敛证据：watch 回 MONITORING、enabled 保持 true、latch/activeAttempt/lastError 全清；
-    // outbox 记录已删除（绝不残留可重放/可补发的 attempt）。
+    // fire-and-forget：发送成功但未经确认 → 保持 RESUME_QUEUED，latch/activeAttempt
+    // 与 outbox 记录保留（下一轮重放确认的锚点），绝不冒充收敛。
     const afterCycle3 = (await store.load("thread-1"))!;
-    expect(afterCycle3.phase).toBe("MONITORING");
+    expect(afterCycle3.phase).toBe("RESUME_QUEUED");
     expect(afterCycle3.enabled).toBe(true);
-    expect(afterCycle3.interruptionLatch).toBeUndefined();
-    expect(afterCycle3.activeAttemptId).toBeUndefined();
-    expect(afterCycle3.lastError).toBeUndefined();
-    expect(await outbox.loadPending()).toHaveLength(0);
+    expect(afterCycle3.interruptionLatch).toBeDefined();
+    expect(afterCycle3.activeAttemptId).toBeDefined();
+    expect(await outbox.loadPending()).toHaveLength(1);
 
-    // cycle4：可信 COMPLETED + POSITIVE → disable（正常完成路径，与决策A 收敛正交）。
+    // cycle4：重放确认 → CONFIRMED → outbox 写 confirmedAt → monitor 清
+    // latch+activeAttempt+outbox → MONITORING；已确认 attempt 绝不补发。
+    now += STEP_MS;
+    await monitor.detect(newCycleId());
+    const afterCycle4 = (await store.load("thread-1"))!;
+    expect(afterCycle4.phase).toBe("MONITORING");
+    expect(afterCycle4.enabled).toBe(true);
+    expect(afterCycle4.interruptionLatch).toBeUndefined();
+    expect(afterCycle4.activeAttemptId).toBeUndefined();
+    expect(afterCycle4.lastError).toBeUndefined();
+    expect(await outbox.loadPending()).toHaveLength(0);
+    expect(confirmCalls).toBeGreaterThanOrEqual(2); // 发送后首轮 UNKNOWN + 重放轮确认
+
+    // cycle5：可信 COMPLETED + POSITIVE（无锁存）→ disable（正常完成路径，与决策A 收敛正交）。
     now += STEP_MS;
     session = "COMPLETED";
-    const cycle4 = await monitor.detect(newCycleId());
-    expect(cycle4.watchOutcomes[0].nextPhase).toBe("DISABLED");
-    const afterCycle4 = (await store.load("thread-1"))!;
-    expect(afterCycle4.phase).toBe("DISABLED");
-    expect(afterCycle4.enabled).toBe(false);
+    const cycle5 = await monitor.detect(newCycleId());
+    expect(cycle5.watchOutcomes[0].nextPhase).toBe("DISABLED");
+    const afterCycle5 = (await store.load("thread-1"))!;
+    expect(afterCycle5.phase).toBe("DISABLED");
+    expect(afterCycle5.enabled).toBe(false);
     // 计数不增长：CONFIRMED 收敛后绝不重复发送。
-    const countsAfterCycle4 = JSON.parse(await readFile(countsPath, "utf8"));
-    expect(countsAfterCycle4.threadResume).toBe(1);
-    expect(countsAfterCycle4.turnStart).toBe(1);
+    const countsAfterCycle5 = JSON.parse(await readFile(countsPath, "utf8"));
+    expect(countsAfterCycle5.threadResume).toBe(1);
+    expect(countsAfterCycle5.turnStart).toBe(1);
   });
 
   it("AR-06/09/12/15: 整链——勾选→arming→归零锁存→恢复→恰好一次发送→CONFIRMED 收敛（决策A）；不再进 NEEDS_ATTENTION", async () => {    const stateDir = await tempDir("ar6-chain-state-");
@@ -234,10 +267,24 @@ describe("T6 production adapter ↔ fake app-server", () => {
     // 会话状态随周期推进：前两轮 RUNNING（arming/归零），cycle3 起会话已结束（STOPPED）。
     let session = "RUNNING";
 
-    // 生产 adapter 注入：quota 走伪 app-server（动态额度文件），发送/确认走伪 app-server。
+    // 生产 adapter 注入：quota 走伪 app-server（动态额度文件），发送走伪 app-server。
+    // 确认器注入有状态确认 fake（首轮 UNKNOWN → 重放轮 CONFIRMED，覆盖崩溃恢复
+    // 窗口的重放确认收敛；fixture 自退出使生产 confirmer 宿主存活证据不可复现，
+    // 该语义由 app-server-confirmer 单测覆盖）。
+    let confirmCalls = 0;
     const quotaReader = createAppServerQuotaReader({ ...fakeCodexOptions("appserver-v2-file", { FAKE_CODEX_QUOTA_FILE: quotaFile }), cwd });
     const sender = createAppServerSender({ ...fakeCodexOptions("appserver-v2-file", { FAKE_CODEX_QUOTA_FILE: quotaFile, FAKE_CODEX_COUNTS: countsPath }), cwd });
-    const outbox = createAttemptOutbox({ stateDir, sender, confirmer: createAppServerConfirmer({ cwd }), clock });
+    const outbox = createAttemptOutbox({
+      stateDir,
+      sender,
+      confirmer: { async confirm() {
+        confirmCalls += 1;
+        return confirmCalls === 1
+          ? { state: "UNKNOWN" as const, reason: "no evidence yet (post-send, pre-confirm window)" }
+          : { state: "CONFIRMED" as const, reason: "resident turn host alive for thread" };
+      } },
+      clock,
+    });
     const monitor = createMonitor({
       stateDir,
       quotaReader,
@@ -266,15 +313,13 @@ describe("T6 production adapter ↔ fake app-server", () => {
     expect(afterCycle2.interruptionLatch?.id).toBe(`${cycle2.cycleId}:thread-1`);
     expect(afterCycle2.interruptionLatch?.evidenceCycleId).toBe(cycle2.cycleId);
     expect(afterCycle2.interruptionLatch?.previousRunningCycleId).toBe(cycle1.cycleId);
-    // T6 观测：monitor（auto-resume-monitor.ts）每轮只取 quota.state、丢弃 quota.resetAt，
-    // snapshot 也不携带 quotaResetAt → latch.quotaResetAt 在真实链路恒为 undefined。
-    // 该字段为诊断性证据（不影响状态机判定），已作为生产缺口列入 T7 审查项；
-    // 此处不断言其值（reducer 单测已覆盖 snapshot→latch 的透传）。
+    // latch.quotaResetAt 由 reducer 从观测快照透传（官方窗口重置时间）；发送前
+    // resetAt 兜底守卫依赖该字段（见 cycle3 的时钟推进）。
 
     // cycle3：额度恢复 + 会话结束 → 恰好一次发送（thread/resume + turn/start 各 1）。
-    // 伪 app-server 对 turn/start 回发 turn/completed → 生产 sender 自带可靠证据 →
-    // outbox 写 confirmedAt → monitor 同轮 CONFIRMED 收敛（决策A）。
-    now += STEP_MS;
+    // 时钟拨过官方 resetAt（T0+5h）：发送前 resetAt 兜底守卫要求发送不得早于
+    // 官方窗口重置——恢复信号必须落在官方重置之后（2026-09-06 线上守卫）。
+    now = T0 + 5 * 3600_000 + STEP_MS;
     session = "STOPPED";
     await writeFile(quotaFile, JSON.stringify({ usedPercent: 40, windowDurationMins: 300, resetsAt: T0 + 5 * 3600_000 }));
     const cycle3 = await monitor.detect(newCycleId());
@@ -283,27 +328,39 @@ describe("T6 production adapter ↔ fake app-server", () => {
     const counts = JSON.parse(await readFile(countsPath, "utf8"));
     expect(counts.threadResume).toBe(1);
     expect(counts.turnStart).toBe(1);
-    // 收敛证据：watch 回 MONITORING、enabled 保持 true、latch/activeAttempt/lastError 全清。
+    // fire-and-forget：发送成功但未经确认 → 保持 RESUME_QUEUED，锚点保留。
     const afterCycle3 = (await store.load("thread-1"))!;
-    expect(afterCycle3.phase).toBe("MONITORING");
+    expect(afterCycle3.phase).toBe("RESUME_QUEUED");
     expect(afterCycle3.enabled).toBe(true);
-    expect(afterCycle3.interruptionLatch).toBeUndefined();
-    expect(afterCycle3.activeAttemptId).toBeUndefined();
-    expect(afterCycle3.lastError).toBeUndefined();
-    expect(await outbox.loadPending()).toHaveLength(0);
+    expect(afterCycle3.interruptionLatch).toBeDefined();
+    expect(afterCycle3.activeAttemptId).toBeDefined();
+    expect(await outbox.loadPending()).toHaveLength(1);
 
-    // cycle4：正常完成（可信 COMPLETED + POSITIVE）→ disable；已确认 attempt 绝不重发。
+    // cycle4：重放确认 → CONFIRMED 收敛（决策A）→ 清 latch+activeAttempt+outbox
+    // → MONITORING；已确认 attempt 绝不补发，绝不进 NEEDS_ATTENTION。
+    now += STEP_MS;
+    await monitor.detect(newCycleId());
+    const afterCycle4 = (await store.load("thread-1"))!;
+    expect(afterCycle4.phase).toBe("MONITORING");
+    expect(afterCycle4.enabled).toBe(true);
+    expect(afterCycle4.interruptionLatch).toBeUndefined();
+    expect(afterCycle4.activeAttemptId).toBeUndefined();
+    expect(afterCycle4.lastError).toBeUndefined();
+    expect(await outbox.loadPending()).toHaveLength(0);
+    expect(confirmCalls).toBeGreaterThanOrEqual(2); // 发送后首轮 UNKNOWN + 重放轮确认
+
+    // cycle5：正常完成（可信 COMPLETED + POSITIVE）→ disable；已确认 attempt 绝不重发。
     now += STEP_MS;
     session = "COMPLETED";
-    const cycle4 = await monitor.detect(newCycleId());
-    expect(cycle4.resumedCount).toBe(0);
-    const afterCycle4 = (await store.load("thread-1"))!;
-    expect(afterCycle4.phase).toBe("DISABLED");
-    expect(afterCycle4.enabled).toBe(false);
+    const cycle5 = await monitor.detect(newCycleId());
+    expect(cycle5.resumedCount).toBe(0);
+    const afterCycle5 = (await store.load("thread-1"))!;
+    expect(afterCycle5.phase).toBe("DISABLED");
+    expect(afterCycle5.enabled).toBe(false);
     // 计数不增长：CONFIRMED 收敛后绝不重复发送。
-    const countsAfterCycle4 = JSON.parse(await readFile(countsPath, "utf8"));
-    expect(countsAfterCycle4.threadResume).toBe(1);
-    expect(countsAfterCycle4.turnStart).toBe(1);
+    const countsAfterCycle5 = JSON.parse(await readFile(countsPath, "utf8"));
+    expect(countsAfterCycle5.threadResume).toBe(1);
+    expect(countsAfterCycle5.turnStart).toBe(1);
   });
 });
 
