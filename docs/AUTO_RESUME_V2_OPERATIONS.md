@@ -120,15 +120,15 @@ F3～F5 最终增量证据：server V2 34/34、monitor 30/30、Desktop observati
 
 ### 开机自启的注册与卸载
 
-- 注册（管理员 PowerShell）：`powershell -ExecutionPolicy Bypass -File apps\resume-host\install-autostart.ps1`；任务名默认 `codex-resume-host`（`-TaskName` 可改），动作是 `wscript.exe "…\start-host.vbs"`，触发器为登录时，失败重启 3 次 / 间隔 1 分钟，`MultipleInstances IgnoreNew`，执行时间不限。
+- 注册（管理员 PowerShell）：`powershell -ExecutionPolicy Bypass -File apps\resume-host\install-autostart.ps1`；任务名默认 `resume-host`（`-TaskName` 可改），动作是 `wscript.exe "…\start-host.vbs"`，触发器为登录时，失败重启 3 次 / 间隔 1 分钟，`MultipleInstances IgnoreNew`，执行时间不限。
 - 卸载：`powershell -ExecutionPolicy Bypass -File apps\resume-host\uninstall-autostart.ps1`；只注销计划任务，不删除任何状态数据（watch / lease / jobs 都留在状态目录里）。
-- 等价的 XML 注册方式：`apps/resume-host/resume-host-task.xml`（`schtasks /Create /TN codex-resume-host /XML resume-host-task.xml /F`，XML 里的 VBS 路径按本机实际位置改）。
-- 验证注册结果：`Start-ScheduledTask -TaskName codex-resume-host`、`Get-ScheduledTaskInfo -TaskName codex-resume-host`。
+- 等价的 XML 注册方式：`apps/resume-host/resume-host-task.xml`（`schtasks /Create /TN resume-host /XML resume-host-task.xml /F`，XML 里的 VBS 路径按本机实际位置改）。
+- 验证注册结果：`Start-ScheduledTask -TaskName resume-host`、`Get-ScheduledTaskInfo -TaskName resume-host`。
 
 ### 从旧 taskboard 任务迁移
 
 1. 先停用旧任务：`schtasks /Change /TN taskboard-server-47823 /DISABLE`（旧任务名与旧端口 47823 都随 taskboard 作废）。
-2. 再注册新任务：`install-autostart.ps1`（任务名 `codex-resume-host`）。
+2. 再注册新任务：`install-autostart.ps1`（任务名 `resume-host`）。
 3. 两个任务同时跑也不会双发：owner lease 只会放行一个实例，另一方拿不到 lease 就停在 `execute-blocked` 并如实报出原因。
 4. 旧 jobs 不被新宿主删除或改写，只在能力门禁里被只读检查；存在活跃 legacy job 时 execute 被阻断。
 

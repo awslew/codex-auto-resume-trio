@@ -5,7 +5,7 @@
 #
 # 只注销计划任务，不删除任何状态数据（watch / lease / jobs 都在状态目录里保留）。
 param(
-    [string]$TaskName = "codex-resume-host"
+    [string]$TaskName = "resume-host"
 )
 
 $ErrorActionPreference = "Stop"

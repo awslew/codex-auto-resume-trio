@@ -34,9 +34,12 @@ codex-auto-resume/
 需要 **Node.js ≥ 22.5**（核心用内置 `node:sqlite`，不需要额外装 sqlite 库）与 **Python 3.11+**（两个 Python 组件）。
 
 ```bash
-npm install
+npm install          # 装依赖；prepare 会自动构建一次（宿主直接引用 dist/ 产物）
 npm run check        # lint + 类型检查 + 构建 + 核心测试 + 宿主测试
 ```
+
+> 若你跳过 `npm install`（或用了 `npm ci --ignore-scripts`），先手动跑一次 `npm run build`：
+> `apps/resume-host/` 以相对路径引入仓库根的 `dist/index.js`，没有构建产物它起不来。
 
 ### 1）先看有哪些会话被额度打断了
 
@@ -59,7 +62,7 @@ node apps/resume-host/bin/resume-host.mjs run --execute   # 显式开启真实�
 状态页：<http://127.0.0.1:5173/>（只读；显示执行模式、能力门禁、上次检测、watch 明细、项目总谱）
 
 Windows 上可以直接双击 `apps/resume-host/start.cmd`（带 execute）或 `start-observe.cmd`（只观测），
-开机自启用 `apps/resume-host/install-autostart.ps1` 注册计划任务 `codex-resume-host`。
+开机自启用 `apps/resume-host/install-autostart.ps1` 注册计划任务 `resume-host`。
 
 ### 3）项目总谱 / API 配额
 

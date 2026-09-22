@@ -17,7 +17,7 @@ apps/resume-host/
 ├─ start-observe.cmd        # 手动启动（只观测、零发送）
 ├─ stop.cmd                 # 按 PID 文件精确停进程树
 ├─ start-host.vbs           # 开机自启入口（隐藏窗口）
-├─ install-autostart.ps1    # 注册计划任务 codex-resume-host
+├─ install-autostart.ps1    # 注册计划任务 resume-host
 ├─ uninstall-autostart.ps1  # 注销计划任务
 ├─ resume-host-task.xml     # 同一计划任务的 XML 形态
 ├─ tests/host.test.mjs      # 宿主接线测试（Node 原生 test runner，零依赖）
@@ -104,11 +104,11 @@ Windows 上更省事：双击 `start.cmd`（等于 `run --execute --tray`）或 
 
 ```powershell
 # 管理员 PowerShell
-powershell -ExecutionPolicy Bypass -File install-autostart.ps1      # 注册任务 codex-resume-host
+powershell -ExecutionPolicy Bypass -File install-autostart.ps1      # 注册任务 resume-host
 powershell -ExecutionPolicy Bypass -File uninstall-autostart.ps1   # 注销（不删状态数据）
 ```
 
-或直接用 XML：`schtasks /Create /TN codex-resume-host /XML resume-host-task.xml /F`
+或直接用 XML：`schtasks /Create /TN resume-host /XML resume-host-task.xml /F`
 （XML 里的路径按你本机实际位置改）。
 
 链路：计划任务 → `start-host.vbs`（隐藏窗口，内部置 `AUTO_RESUME_V2_EXECUTE=1`）

@@ -7,7 +7,7 @@
 #
 # 脚本不硬编码本机路径：计划任务的动作指向本仓库里实际存在的 start-host.vbs。
 param(
-    [string]$TaskName = "codex-resume-host"
+    [string]$TaskName = "resume-host"
 )
 
 $ErrorActionPreference = "Stop"
