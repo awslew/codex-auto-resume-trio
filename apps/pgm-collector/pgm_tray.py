@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PGM Dashboard 托盘启动器（仿 apiquota-dashboard 模式）
+PGM Dashboard 托盘启动器（与本仓库的配额仪表盘同款托盘模式）
 双击任务栏图标 → 启动看板(127.0.0.1:5101) + 自动开浏览器；托盘可退出。
 
 - 左键单击 / “打开看板” = 打开浏览器看板页（已运行则直接打开，未运行则启动）
