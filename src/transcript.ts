@@ -1,5 +1,5 @@
 /**
- * transcript.ts —— 把 pgm-board 的 Codex 转录解析能力移植为 TS 模块。
+ * transcript.ts —— Codex 转录解析模块：把 rollout JSONL 读成结构化会话。
  *
  * 数据源（全部只读）：
  *  - ~/.codex/session_index.jsonl            -> id -> { thread_name, updated_at }

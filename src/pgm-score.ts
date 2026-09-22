@@ -1,5 +1,5 @@
 /**
- * pgm-score.ts —— 把 pgm-board 的"项目总谱"感知能力移植为 TS 模块。
+ * pgm-score.ts —— 「项目总谱」感知模块：把 Codex 会话汇成按工作区分组的进展视图。
  *
  * 数据源（全部只读）：
  *  - ~/.codex/session_index.jsonl -> id -> { thread_name, updated_at }
