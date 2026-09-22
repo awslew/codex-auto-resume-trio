@@ -7,23 +7,22 @@ coverage/
 
 # logs
 *.log
-
-# taskboard runtime data (kept on disk, not versioned)
-apps/taskboard/.data/
-apps/taskboard/.tmp/
-apps/taskboard/.wrangler/
+*.err
 
 # python
 __pycache__/
+*.pyc
+.venv/
+venv/
 
-# pgm-collector runtime data
-extensions/pgm-collector/runtime/
+# api quota dashboard real config (never commit keys)
+config.yaml
+config.yaml.bak
+
+# runtime state (kept on disk, not versioned)
+apps/pgm-collector/runtime/
+apps/resume-host/runtime/
 
 # os / editor
 .DS_Store
-
-# 本地 UI 验证截图产物
-screenshots/
-
-# original taskboard checkout (migrated into apps/taskboard)
-dashi-taskboard/
+Thumbs.db

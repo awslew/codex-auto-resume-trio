@@ -1,0 +1,13 @@
+#!/bin/sh
+# PGM CLI — 项目路径 = 脚本所在目录；解释器按 PGM_PYTHON → python3 → python 顺序解析
+here="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+PY="${PGM_PYTHON:-}"
+if [ -z "$PY" ]; then
+  if command -v python3 >/dev/null 2>&1; then PY=python3
+  elif command -v python >/dev/null 2>&1; then PY=python
+  else
+    echo "找不到 Python。设 PGM_PYTHON 指向解释器，或把 python3/python 放进 PATH。" >&2
+    exit 1
+  fi
+fi
+exec "$PY" "$here/pgm.py" "$@"

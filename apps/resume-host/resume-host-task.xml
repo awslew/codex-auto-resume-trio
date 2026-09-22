@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Codex 自动续跑宿主 · 开机自启计划任务
+
+  注册（管理员 PowerShell，路径按你本机实际位置改）：
+      schtasks /Create /TN codex-resume-host /XML resume-host-task.xml /F
+
+  说明：
+  - 触发器 = 当前用户登录时启动；失败重试 3 次 / 间隔 1 分钟。
+  - 动作 = wscript 跑同目录的 start-host.vbs（隐藏窗口，内部再拉起
+    `node bin/resume-host.mjs run --tray`，并显式开启 AUTO_RESUME_V2_EXECUTE=1）。
+  - 与旧 taskboard 任务（taskboard-server-47823）可共存，但两者都是自动续跑的
+    调度者：新宿主有 owner lease 互斥保护，冲突时只会有一方真正发送，
+    另一方门禁阻塞并如实报原因。切换完成后请停用旧任务。
+-->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Codex 自动续跑宿主（无人值守续跑 + 只读状态页 + 系统托盘）</Description>
+    <URI>\codex-resume-host</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>wscript.exe</Command>
+      <Arguments>"D:\codex-auto-resume-trio\apps\resume-host\start-host.vbs"</Arguments>
+      <WorkingDirectory>D:\codex-auto-resume-trio\apps\resume-host</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

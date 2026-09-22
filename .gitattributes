@@ -1,0 +1,12 @@
+* text=auto eol=lf
+
+# Windows 专用脚本保持 CRLF（记事本 / cmd 友好）；Git 仍按文本归一化存储。
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.vbs text eol=crlf
+
+# 二进制
+*.png binary
+*.ico binary
+*.woff2 binary

@@ -1,0 +1,5 @@
+# 项目总谱需要的最小依赖（CLI pgm.py 只用标准库，不需要这些）
+# 装法：pip install -r requirements.txt
+flask>=3.0
+pystray>=0.19
+Pillow>=10.0

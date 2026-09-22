@@ -1,0 +1,17 @@
+# 真实密钥配置（绝不提交）
+config.yaml
+config.yaml.bak
+
+# 日志
+*.log
+*.err
+run.err
+run.log
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 虚拟环境
+.venv/
+venv/

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API 配额仪表盘</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div class="mesh"></div>
+<div class="page">
+  <header>
+    <span class="eyebrow">API Quota Dashboard</span>
+    <h1>还能用多少<span class="dot">.</span></h1>
+    <p class="sub">下次自动刷新 <b id="countdown">--:--</b></p>
+  </header>
+  <main class="grid" id="grid"></main>
+  <div class="foot">数据直接来自各供应商官方源 · 点击托盘图标可重新打开本页</div>
+</div>
+<div id="loading">正在获取配额…</div>
+<script src="/app.js"></script>
+</body>
+</html>

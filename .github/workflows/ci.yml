@@ -5,41 +5,51 @@ on:
   pull_request:
 
 jobs:
-  resume-core:
-    name: resume-core
+  core-and-host:
+    name: core + host (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-    defaults:
-      run:
-        working-directory: packages/resume-core
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: packages/resume-core/package-lock.json
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm test
       - run: npm run build
+      - run: npm test
+      - run: npm run check:host
 
-  taskboard-typecheck:
-    name: taskboard-typecheck
+  python-components:
+    name: python components
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/taskboard
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-python@v5
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: apps/taskboard/package-lock.json
-      - run: npm ci
-      - run: npm run typecheck
+          python-version: "3.11"
+      - name: 语法检查（不装依赖，纯 compileall）
+        run: |
+          python -m compileall -q apps/pgm-collector
+          python -m compileall -q apps/quota-dashboard
+      - name: 项目总谱 CLI（纯标准库，无第三方依赖）
+        working-directory: apps/pgm-collector
+        run: python pgm.py --help || python pgm.py
+      - name: 配额仪表盘：缺配置时必须优雅退出而不是崩栈
+        working-directory: apps/quota-dashboard
+        run: |
+          set +e
+          python main.py --selftest
+          code=$?
+          set -e
+          # 未配置 config.yaml 时约定退出码 1（如实报“配置不可用”），
+          # 出现 traceback 或其它退出码即为失败。
+          if [ "$code" -ne 1 ]; then
+            echo "期望退出码 1（配置不可用），实际 $code"
+            exit 1
+          fi

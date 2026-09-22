@@ -1,22 +1,48 @@
 {
-  "name": "codex-ops",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Codex 任务运营中心 monorepo：Taskboard（任务管理）+ Resume Core（额度自动续跑）+ PGM Collector（项目总谱感知）",
-  "workspaces": [
-    "apps/taskboard",
-    "packages/resume-core"
+  "name": "codex-auto-resume",
+  "version": "0.2.0",
+  "description": "Unofficial local supervisor that resumes Codex work after usage limits reset — Core scheduler + unattended watcher host + project scoreboard + API quota dashboard.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "bin": {
+    "car": "./bin/car.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "scripts",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
-    "build:resume": "npm --workspace packages/resume-core run build",
-    "typecheck:resume": "npm --workspace packages/resume-core run typecheck",
-    "test:resume": "npm --workspace packages/resume-core test",
-    "build:taskboard": "npm --workspace apps/taskboard run build",
-    "start:taskboard": "npm --workspace apps/taskboard run start",
-    "dev:taskboard": "npm --workspace apps/taskboard run dev",
-    "check": "npm run typecheck:resume && npm run build:resume && npm run test:resume && npm run build:taskboard"
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "status": "node apps/resume-host/bin/resume-host.mjs status",
+    "detect": "node apps/resume-host/bin/resume-host.mjs detect",
+    "daemon": "node apps/resume-host/bin/resume-host.mjs run",
+    "check": "npm run lint && npm run typecheck && npm run build && npm test && npm run check:host",
+    "check:host": "node --test apps/resume-host/tests/*.test.mjs",
+    "check:python": "python -m compileall -q apps/pgm-collector apps/quota-dashboard",
+    "check:all": "npm run check && npm run check:python"
   },
   "engines": {
     "node": ">=22.5"
+  },
+  "dependencies": {
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@types/node": "^22.10.7",
+    "eslint": "^9.18.0",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.20.0",
+    "vitest": "^2.1.8"
   }
 }

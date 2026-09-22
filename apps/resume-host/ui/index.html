@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codex 自动续跑 · 状态</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <div class="bar-main">
+        <span class="dot" id="dot" aria-hidden="true"></span>
+        <h1>Codex 自动续跑</h1>
+        <span class="tag" id="mode-tag">读取中…</span>
+      </div>
+      <div class="bar-actions">
+        <span class="hint" id="updated">—</span>
+        <button type="button" id="detect">立即检测</button>
+        <button type="button" id="refresh">重新读取</button>
+      </div>
+    </header>
+
+    <p class="lede" id="lede">正在读取宿主状态…</p>
+
+    <section class="grid">
+      <div class="card">
+        <h2>执行模式</h2>
+        <p class="big" id="mode">—</p>
+        <p class="note" id="mode-note"></p>
+      </div>
+      <div class="card">
+        <h2>能力门禁</h2>
+        <p class="big" id="gate">—</p>
+        <ul class="reasons" id="reasons"></ul>
+      </div>
+      <div class="card">
+        <h2>上次检测</h2>
+        <p class="big" id="last-detect">—</p>
+        <p class="note" id="last-report"></p>
+      </div>
+      <div class="card">
+        <h2>Codex 入口</h2>
+        <p class="mono" id="entry">—</p>
+        <p class="note" id="state-dir"></p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>监听中的会话（watch）</h2>
+        <span class="count" id="watch-count">0</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>会话</th>
+              <th>工作目录</th>
+              <th>相位</th>
+              <th>续跑次数</th>
+              <th>最近观测</th>
+              <th>错误</th>
+            </tr>
+          </thead>
+          <tbody id="watches">
+            <tr class="empty"><td colspan="6">暂无 watch</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="foot">
+        本页只读。<b>开启 watch</b>（把某个被额度打断的会话交给宿主）请用
+        <code>resume-host watch add &lt;threadId&gt; --cwd &lt;工作目录&gt;</code>，
+        或在原看板 / Codex 界面里勾选。
+      </p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>项目总谱</h2>
+        <span class="count" id="pgm-count">—</span>
+        <button type="button" id="pgm-load">读取总谱</button>
+      </div>
+      <div id="pgm-body" class="pgm-body">
+        <p class="foot">
+          按需读取。聚合 <code>~/.codex</code> 转录，把每个工作区当"一个声部"。
+          需要 AI 现状分析与接力简报请用
+          <code>apps/pgm-collector/pgm_dash.cmd</code>（同一份数据源的完整版）。
+        </p>
+      </div>
+    </section>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

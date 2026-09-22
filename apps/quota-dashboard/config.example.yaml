@@ -1,0 +1,56 @@
+# =====================================================================
+# API 配额仪表盘 配置模板
+# 用法：把本文件复制为 config.yaml，填入你自己的 key 后运行。
+#       config.yaml 已在 .gitignore 中，不会被提交。
+# 每项 key 都从各供应商官网的控制台获取；请勿与他人共享你的 key。
+# =====================================================================
+
+# 后台自动刷新间隔（分钟）。官方数据源全部为官方接口 / 官方登录态页面。
+refresh_interval_minutes: 3
+
+# 本地仪表盘监听端口（只绑 127.0.0.1，仅本机可访问）。
+# 默认 8787；留空或删掉本行也用 8787。环境变量 API_QUOTA_PORT 优先级更高。
+# 该端口被占用时程序自动退回系统分配的空闲端口，并打印一行提示。
+dashboard_port: 8787
+
+providers:
+  deepseek:
+    enabled: true
+    # DeepSeek 官网控制台 → API Keys 里创建：https://platform.deepseek.com
+    api_key: "sk-你的DeepSeek官网key"
+    base_url: "https://api.deepseek.com"
+    proxy: ""                       # 留空 = 直连（DeepSeek 域内无需代理）
+
+  openrouter:
+    enabled: true
+    # OpenRouter 控制台 → Keys：https://openrouter.ai/settings/keys
+    api_key: "sk-or-v1-你的OpenRouter key"
+    base_url: "https://openrouter.ai/api"
+    # 海外接口需要走代理（例如本机 Clash 默认端口 7897）。
+    # 不需要代理时留空即可。
+    proxy: "http://127.0.0.1:7897"
+
+  opencode_go:
+    enabled: true
+    # OpenCode Go 没有公开的用量查询 API，官方唯一的用量源是登录态控制台页。
+    api_key: "sk-你的OpenCode Go key"   # 仅推理接口用，不参与用量查询
+    base_url: "https://opencode.ai"
+    proxy: "http://127.0.0.1:7897"
+    # 获取方式（一次性，cookie 过期需重新复制）：
+    #   1) 用浏览器登录 https://opencode.ai，打开你的用量页
+    #   2) 按 F12 → Network → 复制任意请求的完整 Cookie 请求头，粘到下面
+    cookie: ""
+    # 用量页地址（含你自己的 workspaceId），形如：
+    #   https://opencode.ai/workspace/<你的workspaceId>/go
+    usage_url: ""
+    # 未配置 cookie/usage_url 时，卡片如实显示「官方数据源不可用」。
+
+  codex:
+    enabled: true
+    # Codex 不用 API key：认证走 Codex CLI 的登录态 ~/.codex/auth.json
+    # （本机已登录过 codex 即自动可用；程序只读，绝不写回该文件）
+    api_key: ""
+    base_url: "https://chatgpt.com"
+    proxy: "http://127.0.0.1:7897"
+    # 自定义登录态路径；留空 = 默认 ~/.codex/auth.json
+    auth_path: ""

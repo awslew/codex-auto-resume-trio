@@ -1,0 +1,19 @@
+{
+  "name": "resume-host",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Codex 自动续跑常驻宿主：调度无人值守续跑，并提供只读状态页与系统托盘。",
+  "bin": {
+    "resume-host": "./bin/resume-host.mjs"
+  },
+  "scripts": {
+    "start": "node bin/resume-host.mjs run",
+    "status": "node bin/resume-host.mjs status",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "comment": "本包不自带依赖：它直接以相对路径引入仓库根的构建产物 ../../../dist/index.js（核心包 resume-core）。因此运行前必须先 `npm run build`。这样也避免 npm workspace 在仓库根生成自引用链接（会让任何目录扫描无限递归）。"
+}
