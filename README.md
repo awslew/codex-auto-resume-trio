@@ -27,7 +27,6 @@ codex-auto-resume/
 │  ├─ pgm-collector/         # 项目总谱：CLI + Web 看板 + 接力简报（Python + flask）
 │  └─ quota-dashboard/       # API 配额仪表盘：托盘 + 本地仪表盘（Python + pystray）
 ├─ docs/                     # 自动续跑 V2 设计 / 执行计划 / 运维手册
-└─ .github/workflows/ci.yml  # 三平台 CI
 ```
 
 ## 快速开始
