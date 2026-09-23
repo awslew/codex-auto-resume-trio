@@ -1,4 +1,4 @@
-# codex-auto-resume
+# codex-auto-resume-trio
 
 **Codex 无人值守续跑 + 项目总谱 + API 配额** —— 三块互补的本地工具，合在一个仓库里。
 
@@ -18,7 +18,7 @@ Codex 的 5 小时 / 每周额度跑满时，长任务会停在半路。这个�
 ## 目录结构
 
 ```
-codex-auto-resume/
+codex-auto-resume-trio/
 ├─ src/                      # 自动续跑核心（TypeScript，包名 resume-core，CLI: car）
 ├─ tests/                    # 核心测试（vitest，168 个用例）
 ├─ scripts/                  # 核心的 systemd / launchd / Windows 计划任务安装脚本
