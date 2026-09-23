@@ -1,0 +1,154 @@
+# codex-auto-resume-trio
+
+> 三块互补的本地工具合在一个仓库里，解决「Codex 5 小时 / 每周额度跑满后长任务停在半路」这件事：**认出被额度打断的会话，到重置时间自动接着跑同一个会话**，并且让你随时看得见它到底有没有在跑。核心安全设计是 **fail-closed**——默认零发送、额度只认结构化数据、会话库只读扫描。
+
+## 项目定位
+
+- **给谁用**：在本机用 Codex（Codex Desktop / app-server）跑长任务、又常被额度打断的个人开发者。
+- **解决什么问题**：额度恢复后不需要你手动盯时间重新开跑；同时把「多个 Codex 项目的进展」和「四家 API 的额度余量」放到可视化面板上。
+- **不是什么**：不是 Codex 官方组件（**unofficial**）；不注入键盘、不点桌面、不改 Codex 会话库；**不编造额度**——官方没有接口就如实显示「官方数据源不可用」。
+
+## 四个组件
+
+| 组件 | 位置 | 技术栈 | 作用 |
+|---|---|---|---|
+| 自动续跑核心 | 仓库根 `src/` | Node/TypeScript（包名 `resume-core`，CLI `car`） | 扫 Codex Desktop 会话库，认出因额度停止的会话，到期用官方 `codex exec resume` / app-server 接续同一个会话 |
+| 续跑宿主 | `apps/resume-host/` | Node（零第三方依赖） | 让续跑在后台无人值守地跑：常驻调度 + 只读状态页 + 系统托盘 + 开机自启 |
+| 项目总谱 | `apps/pgm-collector/` | Python + flask | 把多个 Codex 项目的进展汇成「一张乐谱」，每项目一个声部；带 AI 现状分析与「接力」简报 |
+| API 配额 | `apps/quota-dashboard/` | Python + pystray | 托盘常驻配额仪表盘：DeepSeek / OpenRouter / OpenCode Go / Codex 四家官方数据源 |
+
+## 快速开始
+
+需要 **Node.js ≥ 22.5**（核心用内置 `node:sqlite`，不需要额外装 sqlite 库）与 **Python 3.11+**（两个 Python 组件）。
+
+```bash
+npm install          # 装依赖；prepare 会自动构建一次（宿主直接引用 dist/ 产物）
+npm run check        # lint + 类型检查 + 构建 + 核心测试（vitest）+ 宿主测试
+```
+
+若跳过 `npm install`（或用了 `npm ci --ignore-scripts`），先手动跑一次 `npm run build`——
+`apps/resume-host/` 以相对路径引用仓库根的 `dist/index.js`，没有构建产物它起不来。
+
+### 1）先看有哪些会话被额度打断了
+
+```bash
+node bin/car.js desktop-sessions          # 扫描（只读 ~/.codex/*.sqlite）；--json 出原始 JSON
+node bin/car.js desktop-resume            # 交互式勾选要接续的会话
+node bin/car.js desktop-resume --all      # 全选（不问）
+node bin/car.js desktop-resume --dry-run  # 只打印将要调度的内容，不创建 job
+```
+
+### 2）让它在后台无人值守地跑
+
+**默认是安全模式**：不显式开启就永远只观测、零发送。
+
+```bash
+npm run status                            # 看当前状态（宿主没在跑时退回读磁盘状态，不假装健康）
+npm run daemon                            # 前台常驻（observe，零发送）
+npm run detect                            # 立即触发一次检测
+node apps/resume-host/bin/resume-host.mjs run --execute   # 显式开启真实发送
+```
+
+状态页：`http://127.0.0.1:5173/`（只读；显示执行模式、能力门禁、上次检测、watch 明细、项目总谱）。
+Windows 上可直接双击 `apps/resume-host/start.cmd`（execute）或 `start-observe.cmd`（只观测）。
+
+### 3）项目总谱 / API 配额
+
+```bash
+cd apps/pgm-collector    && pip install -r requirements.txt && pgm_dash.cmd     # 看板（默认 5100）
+cd apps/quota-dashboard  && pip install -r requirements.txt
+copy config.example.yaml config.yaml     # 填入自己的 key（该文件已在 .gitignore 里）
+python main.py --selftest                # 无界面验证：跑一轮刷新打印结果后退出
+python main.py                           # 托盘 + 仪表盘（默认 127.0.0.1:8787）
+```
+
+## 核心命令清单
+
+**`car`（自动续跑核心 CLI，入口 `bin/car.js` → `dist/cli.js`）**
+
+```bash
+node bin/car.js run                       # 跑一个 Codex 任务，额度重置后自动续跑
+node bin/car.js adopt --cwd <dir>         # 收养一个已存在的 Codex thread（先验证可续跑）
+node bin/car.js status                    # daemon 与 job 摘要
+node bin/car.js desktop-sessions [--json]
+node bin/car.js desktop-resume [--all|--select <ids>|--dry-run]
+node bin/car.js jobs                      # 列出全部 job
+node bin/car.js logs                      # 打印 job 日志
+node bin/car.js cancel                    # 取消一个等待中的 job
+node bin/car.js daemon start|stop|foreground|doctor
+```
+
+**`resume-host`（续跑宿主，`apps/resume-host/bin/resume-host.mjs`）**
+
+```bash
+node apps/resume-host/bin/resume-host.mjs run [--port 5173] [--tray] [--execute|--shadow|--observe]
+node apps/resume-host/bin/resume-host.mjs status [--json|--pretty] [--strict]
+node apps/resume-host/bin/resume-host.mjs watches [--json]
+node apps/resume-host/bin/resume-host.mjs watch add <threadId> --cwd <绝对路径>
+node apps/resume-host/bin/resume-host.mjs watch rm <threadId>
+node apps/resume-host/bin/resume-host.mjs detect
+node apps/resume-host/bin/resume-host.mjs tray [--port 5173]
+```
+
+根目录快捷方式：`npm run status` / `npm run daemon` / `npm run detect`。
+
+**`pgm`（项目总谱，`apps/pgm-collector/`）**
+
+```bash
+pgm.cmd --all            # 看全部会话（默认只看名字以「项目」开头的）
+pgm.cmd --limit 3        # 每个项目多摘几条汇报
+pgm_dash.cmd [端口]      # Web 看板（默认 5100，自动开浏览器）
+start_tray.cmd           # 托盘常驻（默认端口 5101）
+```
+
+**`quota-dashboard`（API 配额，`apps/quota-dashboard/`）**
+
+```bash
+python main.py --selftest                      # 无界面验证
+python main.py                                 # 托盘 + 仪表盘
+python install_autostart.py register|unregister|status
+python update_opencode.py "<新cookie>" "<新用量页URL>"
+```
+
+端口覆盖优先级：环境变量 `API_QUOTA_PORT` > `config.yaml` 的 `dashboard_port` > 默认 `8787`。
+
+## 它凭什么安全（关键约束，如实）
+
+| 约束 | 行为 |
+|---|---|
+| 默认零发送 | `AUTO_RESUME_V2_EXECUTE` 不显式开启时 sender 是空实现，调用次数恒为 0（`observe` / `shadow` 模式） |
+| 唯一调度者 | 跨进程 owner lease（TTL + PID 双条件）；两个实例同时跑只有一个真正发送，另一个如实报 `execute-blocked` |
+| 额度只认结构化数据 | 5 小时窗口只由官方 app-server 的结构化响应识别（`windowDurationMins=300` 或明确的 5h id）；识别不出就是 UNKNOWN 且**不发送**——绝不按文案猜 |
+| 冲突不回退 | 旧版 job / daemon 状态**读不到**时按「有冲突」处理（`LEGACY_STATE_UNREADABLE`），宁可阻塞也不双写 |
+| 只读扫描 | 扫 `~/.codex/*.sqlite` 一律 readOnly；续跑只走官方 CLI / app-server，不注入键盘、不点桌面 |
+| 配额不编数字 | 所有数值直接来自官方响应；解析失败 / 未配置 / 非 200 → 如实显示「官方数据源不可用」 |
+
+**已知代价与边界**
+
+- `execute-blocked` **不是故障**：门禁每个 tick 前重新评估，冲突解除后自动恢复；启动时若被未过期的陈旧租约挡住，最多等 10 分钟自动补位重取 owner。
+- 两个实例若配置**不同的** stateDir 则不会互斥（配置一致性由部署负责）。
+- 生产 confirmer 恒 UNKNOWN（无可靠查询路径）；「发送后进程崩溃、重启无法查询结果」的场景仍依赖人工确认闭环（outbox 保留 + `NEEDS_ATTENTION`）。
+- 核心 vitest 套件在 Windows 上有临时目录清理的并发竞争（`EBUSY`/`ENOTEMPTY` 偶发），属测试自身清理时序问题；单文件运行稳定通过。
+- 本项目是 **unofficial**，与 OpenAI 无隶属关系；上游谱系与第三方归属见 `CREDITS.md`。
+
+## 文档索引
+
+- [README.md](./README.md) —— 主文档（三块组件、快速开始、安全设计表、FAQ）
+- [CREDITS.md](./CREDITS.md) —— 授权与第三方归属（上游谱系、明确不含的第三方代码、运行时依赖）
+- [docs/AUTO_RESUME_V2_OPERATIONS.md](./docs/AUTO_RESUME_V2_OPERATIONS.md) —— **运维与故障排查**：启动停止、查状态、四种执行模式、开机自启、环境变量、剩余风险
+- [docs/AUTO_RESUME_V2_DESIGN.md](./docs/AUTO_RESUME_V2_DESIGN.md) —— 自动续跑 V2 设计方案（状态机、额度识别、持久化状态、幂等）
+- [docs/AUTO_RESUME_V2_EXECUTION_PLAN.md](./docs/AUTO_RESUME_V2_EXECUTION_PLAN.md) —— 执行计划与验收记录
+- [apps/resume-host/README.md](./apps/resume-host/README.md) —— 宿主命令、状态页接口、执行模式、安全边界
+- [apps/pgm-collector/README.md](./apps/pgm-collector/README.md) —— 项目总谱启动方式、数据来源、维护
+- [apps/quota-dashboard/README.md](./apps/quota-dashboard/README.md) —— 四家供应商配置（含 cookie 怎么填）、端口、FAQ
+- [AGENTS.md](./AGENTS.md) —— 在此仓库开发时的约定（面向 coding agent）
+- [LICENSE](./LICENSE) —— MIT
+
+## Optional
+
+- [apps/quota-dashboard/docs/数据源确认.md](./apps/quota-dashboard/docs/数据源确认.md) —— 四家官方数据源的实测返回与解析要点
+- [apps/quota-dashboard/docs/github-research.md](./apps/quota-dashboard/docs/github-research.md) —— 调研与许可证表格
+- [apps/quota-dashboard/LICENSE](./apps/quota-dashboard/LICENSE) —— 该组件的 MIT 许可（含 CodexBar 归属行）
+- [scripts/privacy-audit.py](./scripts/privacy-audit.py) —— 隐私审计脚本
+- [scripts/install-task.ps1](./scripts/install-task.ps1) / [scripts/install-systemd-user.sh](./scripts/install-systemd-user.sh) / [scripts/install-launchd.sh](./scripts/install-launchd.sh) —— Windows / Linux / macOS 的计划任务或服务安装
+- [docs/screenshots/resume-host-status.png](./docs/screenshots/resume-host-status.png) · [docs/screenshots/quota-dashboard.png](./docs/screenshots/quota-dashboard.png) —— 截图
